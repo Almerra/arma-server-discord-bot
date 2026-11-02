@@ -1802,6 +1802,101 @@ def _() -> None:
 
 
 
+@check("a claim the card missed is redrawn, however the press ends")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    INSTRUCTOR = 42
+    HOLDER = "189362064995778560"
+
+    class FakeRequests:
+        def __init__(self, **row) -> None:
+            self.row = {
+                "id": 83, "unit": "default", "badge_key": "cqc", "levels": None,
+                "levels_achieved": None, "variant": None, "status": "requested",
+                "member_id": "5", "instructor_id": None, "instructor_name": None,
+                "created_at": "2026-10-26 01:51:00", "notes": None, "thread_id": None,
+                "queue_channel_id": "1", "queue_message_id": "2", **row,
+            }
+
+        async def by_id(self, request_id):
+            return dict(self.row)
+
+        async def transition(self, request_id, nxt, *, instructor_id=None,
+                             instructor_name=None, **_):
+            if self.row["status"] == nxt:
+                raise TransitionError(f"Request #{request_id} is already {nxt}.")
+            self.row.update(status=nxt, instructor_id=instructor_id,
+                            instructor_name=instructor_name)
+            return dict(self.row)
+
+    class FakeResponse:
+        def __init__(self, fail=None) -> None:
+            self.fail = fail
+            self.sent: list[str] = []
+            self.edited = 0
+
+        async def send_message(self, content, **_):
+            if self.fail:
+                raise self.fail
+            self.sent.append(content)
+
+        async def edit_message(self, **_):
+            if self.fail:
+                raise self.fail
+            self.edited += 1
+
+    def press(requests, fail=None):
+        cog = CTC.__new__(CTC)
+        cog.database = requests
+        cog.bot = SimpleNamespace(logger=SimpleNamespace(warning=lambda _msg: None))
+        cog.can_work_row = lambda user, row: True
+        cog.catalogue_of = lambda row: CAT
+        cog.settings_of = lambda row: DEFAULTS
+        redrawn, posted = [], []
+
+        async def refresh_ticket(row):
+            redrawn.append(row)
+
+        async def post_to_thread(row, content):
+            posted.append(content)
+
+        cog.refresh_ticket = refresh_ticket
+        cog.post_to_thread = post_to_thread
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=INSTRUCTOR, display_name="Instructor"),
+            response=FakeResponse(fail),
+        )
+        asyncio.run(cog.handle_ticket_action(interaction, "claim", 83))
+        return interaction.response, redrawn, posted
+
+    # The normal path edits the card through the reply, nothing else.
+    response, redrawn, posted = press(FakeRequests())
+    assert response.edited == 1 and not redrawn, "a clean claim should not redraw twice"
+    assert posted, "the claim should still be announced in the thread"
+
+    # Saved, but the reply was refused: the card must still change.
+    expired = discord.NotFound(
+        SimpleNamespace(status=404, reason="Not Found"),
+        {"code": 10062, "message": "Unknown interaction"},
+    )
+    requests = FakeRequests()
+    response, redrawn, posted = press(requests, fail=expired)
+    assert requests.row["status"] == "claimed"
+    assert [r["status"] for r in redrawn] == ["claimed"], "card left showing Claim"
+    assert posted, "a refused reply must not swallow the thread notice"
+
+    # A press on a card that missed an earlier claim heals it and names the holder.
+    response, redrawn, posted = press(
+        FakeRequests(status="claimed", instructor_id=HOLDER, instructor_name="Spotless")
+    )
+    assert response.sent and f"<@{HOLDER}>" in response.sent[0], response.sent
+    assert [r["status"] for r in redrawn] == ["claimed"], "stale card not redrawn"
+    assert not posted, "a refused press is not news for the thread"
+
+
 @check("panels redraw on startup, so config changes reach them")
 def _() -> None:
     src = (ROOT.parent / "cogs" / "ctc.py").read_text(encoding="utf-8")

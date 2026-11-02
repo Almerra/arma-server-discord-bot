@@ -1216,19 +1216,38 @@ class CTC(commands.Cog, name="ctc"):
                 instructor_name=name if nxt == "claimed" else None,
             )
         except TransitionError as error:
-            await interaction.response.send_message(f"\N{WARNING SIGN} {error}", ephemeral=True)
+            # A press the database refuses came off a card that no longer
+            # matches it, so redraw the card and say who has the work.
+            current = await self.database.by_id(request_id)
+            message = f"\N{WARNING SIGN} {error}"
+            if current is not None and current["instructor_id"]:
+                message += f" It is with <@{current['instructor_id']}>."
+            with contextlib.suppress(discord.HTTPException):
+                await interaction.response.send_message(message, ephemeral=True)
+            if current is not None:
+                await self.refresh_ticket(current)
             return
 
-        await interaction.response.edit_message(
-            embed=ticket_embed(
-                self.catalogue_of(updated), updated, self.settings_of(updated)["site_url"]
-            ),
-            view=ticket_view(
-                self.catalogue_of(updated),
-                updated,
-                award_url=self.settings_of(updated)["taw_award_url"] or None,
-            ),
-        )
+        try:
+            await interaction.response.edit_message(
+                embed=ticket_embed(
+                    self.catalogue_of(updated), updated, self.settings_of(updated)["site_url"]
+                ),
+                view=ticket_view(
+                    self.catalogue_of(updated),
+                    updated,
+                    award_url=self.settings_of(updated)["taw_award_url"] or None,
+                ),
+            )
+        except discord.HTTPException as error:
+            # The change is already saved. If Discord refuses the reply (the
+            # press timed out, or another copy of the bot answered first) the
+            # card would keep offering Claim on work that is already taken, so
+            # redraw it directly instead.
+            self.bot.logger.warning(
+                f"CTC: could not answer {action} on #{request_id}, redrawing the card: {error}"
+            )
+            await self.refresh_ticket(updated)
         await self.post_to_thread(updated, f"<@{interaction.user.id}> {verb} this request.")
 
         if updated["status"] == "awarded":
