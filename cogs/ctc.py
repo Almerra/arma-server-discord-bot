@@ -1269,6 +1269,13 @@ class CTC(commands.Cog, name="ctc"):
                 await interaction.response.send_message(message, ephemeral=True)
             if current is not None:
                 await self.refresh_ticket(current)
+                # A finished request whose card was still live never got its
+                # last steps either: the member was not told and the thread
+                # stayed open. Do them now.
+                if current["status"] in ("awarded", "cancelled") and not (
+                    await self.thread_closed(current)
+                ):
+                    await self.finish_request(current)
             return
 
         try:
@@ -1283,20 +1290,38 @@ class CTC(commands.Cog, name="ctc"):
             )
             await self.refresh_ticket(updated)
         await self.post_to_thread(updated, f"<@{interaction.user.id}> {verb}.")
+        await self.finish_request(updated)
 
-        if updated["status"] == "awarded":
-            awarded = updated["levels_achieved"] or updated["levels"]
+    async def finish_request(self, row: Any) -> None:
+        """Tell the member a submitted badge is on its way, then close the thread.
+
+        Does nothing for a request that is still open.
+        """
+        if row["status"] == "awarded":
+            awarded = row["levels_achieved"] or row["levels"]
             await self.post_to_thread(
-                updated,
-                f"<@{updated['member_id']}> — "
-                f"**{self.catalogue_of(updated).label(updated['badge_key'], awarded)}**"
+                row,
+                f"<@{row['member_id']}> — "
+                f"**{self.catalogue_of(row).label(row['badge_key'], awarded)}**"
                 " has been submitted on taw.net. BATCOM will award it when they"
                 " can. Congratulations. \N{MILITARY MEDAL}",
             )
             # Close last — anything sent afterwards would reopen the thread.
-            await self.close_thread(updated)
-        elif updated["status"] == "cancelled":
-            await self.close_thread(updated)
+            await self.close_thread(row)
+        elif row["status"] == "cancelled":
+            await self.close_thread(row)
+
+    async def thread_closed(self, row: Any) -> bool:
+        """True if the request's thread already carries the closed prefix, or is gone."""
+        if not row["thread_id"]:
+            return True
+        try:
+            thread = self.bot.get_channel(int(row["thread_id"])) or await self.bot.fetch_channel(
+                int(row["thread_id"])
+            )
+        except discord.HTTPException:
+            return True
+        return thread.name.startswith(CLOSED_PREFIX)
 
     async def assign_request(
         self, interaction: discord.Interaction, row: Any, member: discord.abc.User

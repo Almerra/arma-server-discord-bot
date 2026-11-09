@@ -2083,6 +2083,66 @@ def _() -> None:
     assert sent == ["Only Guest TIs can take the Guest TI seat."], sent
 
 
+@check("a press on a submitted request whose card stuck closes its thread")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    # Request #23: submitted on taw.net, but the card still offered the button
+    # because the reply to that press was refused.
+    row = {"id": 23, "unit": "default", "badge_key": "gun_range", "levels": None,
+           "levels_achieved": "A", "variant": "Rifle", "status": "awarded",
+           "member_id": "5", "instructor_id": "10", "guest_instructor_id": None,
+           "thread_id": "77", "queue_channel_id": "77", "queue_message_id": "78"}
+
+    def press(thread_already_closed: bool):
+        cog = CTC.__new__(CTC)
+        cog.units = Units({}, DEFAULTS)
+        redrawn, posted, closed = [], [], []
+
+        async def by_id(_rid):
+            return dict(row)
+
+        async def transition(rid, nxt, **_):
+            raise TransitionError(f"Request #{rid} is already {nxt}.")
+
+        async def refresh_ticket(r):
+            redrawn.append(r["status"])
+
+        async def post_to_thread(r, content):
+            posted.append(content)
+
+        async def close_thread(r):
+            closed.append(r["id"])
+
+        async def thread_closed(r):
+            return thread_already_closed
+
+        async def send_message(content, **_):
+            pass
+
+        cog.database = SimpleNamespace(by_id=by_id, transition=transition)
+        cog.refresh_ticket, cog.post_to_thread = refresh_ticket, post_to_thread
+        cog.close_thread, cog.thread_closed = close_thread, thread_closed
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=10, display_name="Spotless"),
+            response=SimpleNamespace(send_message=send_message),
+        )
+        asyncio.run(cog.handle_ticket_action(interaction, "award", 23))
+        return redrawn, posted, closed
+
+    redrawn, posted, closed = press(thread_already_closed=False)
+    assert redrawn == ["awarded"], "the stuck card is redrawn"
+    assert len(posted) == 1 and "submitted on taw.net" in posted[0], posted
+    assert closed == [23], "the thread that never closed is closed now"
+
+    redrawn, posted, closed = press(thread_already_closed=True)
+    assert redrawn == ["awarded"] and not posted and not closed, (
+        "a thread that did close must not be congratulated twice"
+    )
+
+
 @check("guest is a real ticket action and survives a restart")
 def _() -> None:
     pattern = TicketButton.__discord_ui_compiled_template__
