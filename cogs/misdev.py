@@ -258,7 +258,11 @@ class MisdevOffice(commands.Cog, name="misdev"):
         await interaction.channel.remove_tags(interaction.channel.parent.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['pending_review'])))
         await interaction.channel.remove_tags(interaction.channel.parent.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['scheduled'])))
 
-        mentions = " ".join(f"<@&{role_id}>" for role_id in self.bot.config['discord']['am2']['roles']['members'])
+        member_roles = [
+            discord.Object(id=int(role_id))
+            for role_id in self.bot.config['discord']['am2']['roles']['members']
+        ]
+        mentions = " ".join(f"<@&{role.id}>" for role in member_roles)
 
         # Send the mission concept rating poll.
         poll_concept = discord.Poll(question="Rate the mission concept!", duration=timedelta(days=7))
@@ -280,7 +284,14 @@ class MisdevOffice(commands.Cog, name="misdev"):
 
         # Send the feedback form embed with button.
         embed = discord.Embed(title="Provide your mission feedback!", description=f"At a minimum, please give your ratings for the mission, Zeuses, and NCO above.\n\nYou can use the feedback form below to share more detailed thoughts about the mission.\n\nIf the button below doesn’t work, please run the `/mission_feedback` command in this thread.", color=0xBEBEFE)
-        await interaction.followup.send(content=mentions, embed=embed, view=MissionFeedbackButton(self.bot))
+        await interaction.followup.send(
+            content=mentions,
+            embed=embed,
+            view=MissionFeedbackButton(self.bot),
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False, users=False, roles=member_roles, replied_user=False
+            ),
+        )
 
 
     @commands.command(name="misdev_info", description="Post information embed for mission submission / help.")

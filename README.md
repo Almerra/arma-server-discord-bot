@@ -3,6 +3,14 @@
 This repository uses [Python-Discord-Bot-Template](https://github.com/kkrypt0nn/Python-Discord-Bot-Template/tree/main) created by [kkrypt0nn](https://github.com/kkrypt0nn) as a template, check out their repository for getting started and installation guides. This bot is built for the TAW AM2 Community with commands that connect to our web panel to stop/start servers.
 
 
+## Mission feedback notifications
+
+`/mission_played` explicitly allows mentions of the configured
+`discord.am2.roles.members` roles on its feedback message. The roles must be
+mentionable, or the bot must have **Mention @everyone, @here, and All Roles**
+permission in the channel. Members need access to the thread; their personal
+notification settings can still suppress push notifications.
+
 ## Mission uploads
 
 MisDev and server-admin moderators (the configured `forum_moderators` roles) can
