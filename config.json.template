@@ -9,13 +9,14 @@
     "am2" : {
       "address": "",
       "public_username": "",
-      "public_password": ""
+      "public_password": "",
+      "mission_folder_path": ""
     },
     "am1" : {
       "address": "",
       "public_username": "",
       "public_password": ""
-    },
+    }
 
   },
   "taw": {

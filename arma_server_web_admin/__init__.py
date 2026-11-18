@@ -10,6 +10,7 @@ import base64
 import a2s
 import datetime
 import aiosqlite
+from utils.mission_upload import upload_mission
 
 class ArmaServerWebAdmin:
     def __init__(self, *, config, database) -> None:
@@ -59,12 +60,16 @@ class ArmaServerWebAdmin:
                 await session.close()
                 return response
                 
-    async def mission_upload(self, user_id: str, guild_id: str, server_type: str="arma3", pbo_upload = None):
-        return None ##Still a WIP
-        basic_auth = await self.get_user_authentication(user_id, guild_id, server_type)
-        async with aiohttp.ClientSession() as session:
-            await session.close()
-            pass
+    async def mission_upload(self, user_id: str, guild_id: str, server_type: str="arma3", pbo_upload = None, game: str="arma3"):
+        panel = self.config['arma_server_web_admin'][server_type]
+        return await upload_mission(
+            pbo_upload,
+            address=panel.get('address', ''),
+            local_path=panel.get('mission_folder_path', ''),
+            game=game,
+            username=panel.get('public_username', ''),
+            password=panel.get('public_password', ''),
+        )
 
 class ArmaServerDatabaseManager:
     def __init__(self, *, connection: aiosqlite.Connection) -> None:

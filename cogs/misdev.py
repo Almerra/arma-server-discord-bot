@@ -3,7 +3,10 @@ from discord import app_commands
 from discord.ext.commands import Context
 import discord
 import re
+import asyncio
+import aiohttp
 from datetime import datetime, timedelta
+from utils.mission_upload import MissionUploadError, mission_filename
 
 class MissionSubmissionModal(discord.ui.Modal, title="Mission Submission Form"):
     def __init__(self, bot, mission_pbo: discord.Attachment) -> None:
@@ -102,6 +105,98 @@ class MissionFeedbackButton(discord.ui.View):
 class MisdevOffice(commands.Cog, name="misdev"):
     def __init__(self, bot) -> None:
         self.bot = bot
+        self.upload_mission_menu = app_commands.ContextMenu(
+            name="Upload mission", callback=self.upload_mission_message
+        )
+
+    async def cog_load(self) -> None:
+        self.bot.tree.add_command(self.upload_mission_menu)
+
+    async def cog_unload(self) -> None:
+        self.bot.tree.remove_command(self.upload_mission_menu.name, type=self.upload_mission_menu.type)
+
+    @app_commands.guild_only()
+    async def upload_mission_message(self, interaction: discord.Interaction, message: discord.Message) -> None:
+        await self._upload_mission(interaction, source_message=message)
+
+    @app_commands.command(name="mission_upload", description="Upload a .pbo mission directly to the AM2 server, replacing an existing version.")
+    @app_commands.describe(mission_pbo="The .pbo mission file to upload.")
+    @app_commands.guild_only()
+    async def mission_upload(self, interaction: discord.Interaction, mission_pbo: discord.Attachment) -> None:
+        await self._upload_mission(interaction, mission_pbo)
+
+    async def _upload_mission(
+        self,
+        interaction: discord.Interaction,
+        mission_pbo: discord.Attachment | None = None,
+        game: str = "arma3",
+        *,
+        source_message: discord.Message | None = None,
+    ) -> None:
+        if interaction.guild is None or interaction.guild.id != self.bot.config['discord']['guild_id']:
+            await interaction.response.send_message(embed=await not_configured_embed(self), ephemeral=True)
+            return
+
+        settings = self.bot.config['discord']
+        allowed_roles = {
+            int(role_id)
+            for office in ('mission_development', 'server_admin_office')
+            for role_id in settings[office]['forum_moderators']
+        }
+        if not isinstance(interaction.user, discord.Member) or not any(
+            role.id in allowed_roles for role in interaction.user.roles
+        ):
+            await interaction.response.send_message(
+                "Only MisDev and server-admin moderators can upload missions.", ephemeral=True
+            )
+            return
+        source_link = ""
+        if source_message is not None:
+            source_link = f"\nSource: [message containing the PBO]({source_message.jump_url})"
+            missions = [
+                attachment for attachment in source_message.attachments
+                if attachment.filename.lower().endswith(".pbo")
+            ]
+            if len(missions) != 1:
+                message = (
+                    "This message has no .pbo attachment."
+                    if not missions else
+                    "This message has multiple .pbo attachments. Use `/mission_upload` with the specific file you want."
+                )
+                await interaction.response.send_message(message + source_link, ephemeral=True)
+                return
+            mission_pbo = missions[0]
+        if mission_pbo is None:
+            await interaction.response.send_message("Please provide a .pbo attachment.", ephemeral=True)
+            return
+        try:
+            mission_filename(mission_pbo.filename)
+        except MissionUploadError as error:
+            await interaction.response.send_message(str(error) + source_link, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            result = await self.bot.arma_server_web_admin.mission_upload(
+                interaction.user.id, interaction.guild.id, "am2", pbo_upload=mission_pbo, game=game
+            )
+        except (MissionUploadError, aiohttp.ClientError, discord.HTTPException, asyncio.TimeoutError, OSError, ValueError, KeyError) as error:
+            self.bot.logger.exception("Mission upload failed for user %s", interaction.user.id)
+            message = str(error) if isinstance(error, MissionUploadError) else (
+                "Mission upload failed. Check the upload configuration, connection, and bot logs."
+            )
+            await interaction.followup.send(message + source_link, ephemeral=True)
+            return
+
+        destination = "the local missions folder" if result.local else "the web panel"
+        message = f"Uploaded `{result.filename}` to {destination}. Any previous version was replaced."
+        if result.refresh_error:
+            self.bot.logger.warning("Mission %s: %s", result.filename, result.refresh_error)
+            message += f"\nWarning: {result.refresh_error}"
+        self.bot.logger.info(
+            "User %s uploaded mission %s via %s", interaction.user.id, result.filename, destination
+        )
+        await interaction.followup.send(message + source_link, ephemeral=True)
 
     @app_commands.command(name="mission_submission", description="Submit a mission to misdev who will review and schedule it to be played.", )
     @app_commands.describe(mission_pbo="The .pbo file for mission you are submitting.")
