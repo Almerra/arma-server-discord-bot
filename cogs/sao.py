@@ -349,44 +349,6 @@ class ServerAdminOffice(commands.Cog, name="server"):
             embed.set_footer(text=f"{response.url}")
             await context.send(embed=embed, ephemeral=True)
 
-    @commands.hybrid_command(name="server_status", description="Get the current server status of a specific server_id or setup a info message for the public to see.", )
-    @app_commands.describe(server_id=param_server_id, server_type=param_server_type, status_channel="Setup a auto status message in a specified channel.", server_ip="Override the IP to point at a specific address rather than localhost.",
-                           server_description="Any additional information you want to include in the server status.", server_modpack="A link to the modpack used for the server.")
-    async def server_status(self, context: Context, server_id: str, server_type: str = "am2", status_channel: discord.TextChannel = None, message_id: str = "", server_ip: str = "am2.taw.net", server_description: str = "",
-                            server_modpack: str = "") -> None:
-        """
-        Get the current server status of a specific server_id or setup a info message for the public to see.
-
-        :param context: The hybrid command context.
-        """
-        response = await self.bot.arma_server_web_admin.get_server_config(context.author.id, context.guild.id, server_type, server_id)
-        if response.status == 200:
-            server = response.json_content
-            if not server is None:
-                status_embed = await self.bot.server_status_embed(server_id, server_type, server_ip, server['port'], server["title"], server_description, server_modpack)
-                if status_channel:  # Add status message to database to keep track.
-                    if not message_id:
-                        message = await status_channel.send("Querying the servers....")
-                        message_id = message.id
-                    response = await self.bot.database.add_server_status(context.guild.id, status_channel.id, message_id, context.author.id, server_id, server_type, server_ip, server['port'], server["title"], server_description,
-                                                                         server_modpack)
-                    if response:
-                        await context.send(f"The status message ({message_id}) has been setup in {status_channel} sucessfully, sending update...", ephemeral=True)
-                    # This update takes too long to send back to the interaction, can maybe call this back/defer. One for later maybe.
-                    await self.bot.update_server_status_message(context.guild.id, status_channel.id, message_id)
-                else:  # Just post current snapshot back to context
-                    await context.send(embed=status_embed)
-            else:  # ID/Nickname could not be found.
-                status_embed = await server_not_exist_embed(self, server_id)
-                await context.send(embed=status_embed, ephemeral=True)
-        elif response.status == 401:
-            status_embed = await unauthorised_embed(self)
-            status_embed.set_footer(text=f"{response.url}")
-            await context.send(embed=status_embed, ephemeral=True)
-        else:
-            status_embed = await error_embed(self, response)
-            status_embed.set_footer(text=f"{response.url}")
-            await context.send(embed=status_embed, ephemeral=True)
 
     @commands.hybrid_command(name="server_login", description="Setup your web panel information in discord so you can use the server commands.", )
     @app_commands.autocomplete(server_type=panel_battalions)
