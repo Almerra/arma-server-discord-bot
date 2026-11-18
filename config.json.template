@@ -9,13 +9,17 @@
     "am2": {
       "address": "",
       "public_username": "",
-      "public_password": "",
-      "mission_folder_path": ""
+      "public_password": ""
     },
     "am1": {
       "address": "",
       "public_username": "",
       "public_password": ""
+    }
+  },
+  "arma_server": {
+    "am2": {
+      "mission_path": ""
     }
   },
   "taw": {

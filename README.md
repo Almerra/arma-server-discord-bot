@@ -74,22 +74,23 @@ one `.pbo` attachment; for multiple PBOs, use `/mission_upload` with the desired
 file. Other attachment types on the message are ignored. Reload the cog or
 restart the bot and sync application commands to register the context menu.
 
-Add `mission_folder_path` under `arma_server_web_admin.<battalion>` in your
+Set `mission_path` under `arma_server.<battalion>` in your
 configuration (see [config.json.template](config.json.template)):
 
 ```json
-"mission_folder_path": "S:\\Servers\\Arma3\\MPMissions"
+"mission_path": "S:\\Servers\\Arma3\\MPMissions"
 ```
 
-Set `mission_folder_path` to the actual missions directory used by the panel's
+Set `mission_path` to the actual missions directory used by the panel's
 `games.arma3.missionPath`. This is an example path, not an automatically
 discovered location. If the directory exists on the bot host, the bot saves
 there using atomic replacement without contacting the panel.
-If empty or missing, it uploads through the selected battalion's panel `address`.
+If the setting is empty or missing, or the directory does not exist locally, it
+uploads through the selected battalion's panel `address`.
 A permissions/write error in an existing local directory is reported, not
 silently retried through the panel.
 
-Uploads use game `arma3`. Local saves use `mission_folder_path`,
+Uploads use game `arma3`. Local saves use `arma_server.<battalion>.mission_path`,
 so that folder must match the game's missions directory.
 
 The bot reuses `arma_server_web_admin.<battalion>.public_username` and

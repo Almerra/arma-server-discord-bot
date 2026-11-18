@@ -65,7 +65,7 @@ class ArmaServerWebAdmin:
         return await upload_mission(
             pbo_upload,
             address=panel.get('address', ''),
-            local_path=panel.get('mission_folder_path', ''),
+            local_path=self.config.get('arma_server', {}).get(server_type, {}).get('mission_path', ''),
             game=game,
             username=panel.get('public_username', ''),
             password=panel.get('public_password', ''),

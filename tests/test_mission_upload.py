@@ -168,14 +168,16 @@ class MissionUploadTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MissionUploadConfigTests(unittest.IsolatedAsyncioTestCase):
-    async def test_panel_credentials_and_mission_folder_are_forwarded(self):
+    async def test_panel_credentials_and_server_mission_path_are_forwarded(self):
         client = ArmaServerWebAdmin(
             config={"arma_server_web_admin": {"am2": {
                 "address": "https://panel.example",
                 "public_username": "public-user",
                 "public_password": "test-password",
-                "mission_folder_path": r"S:\Missions",
-            }}},
+            }}, "arma_server": {
+                "am2": {"mission_path": r"S:\Missions"},
+                "am1": {"mission_path": r"S:\OtherMissions"},
+            }},
             database=None,
         )
         mission = attachment()
@@ -187,6 +189,18 @@ class MissionUploadConfigTests(unittest.IsolatedAsyncioTestCase):
             )
             await client.mission_upload(100, 1, "am2", pbo_upload=mission, game="custom")
             self.assertEqual(transfer.call_args.kwargs["game"], "custom")
+
+    async def test_other_battalion_mission_path_is_not_used(self):
+        client = ArmaServerWebAdmin(
+            config={
+                "arma_server_web_admin": {"am2": {}},
+                "arma_server": {"am1": {"mission_path": r"S:\OtherMissions"}},
+            },
+            database=None,
+        )
+        with patch("arma_server_web_admin.upload_mission", new_callable=AsyncMock) as transfer:
+            await client.mission_upload(100, 1, "am2", pbo_upload=attachment())
+            self.assertEqual(transfer.call_args.kwargs["local_path"], "")
 
     async def test_missing_optional_panel_values_are_forwarded_as_empty(self):
         client = ArmaServerWebAdmin(
