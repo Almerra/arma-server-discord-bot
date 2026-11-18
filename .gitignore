@@ -148,3 +148,5 @@ discord.log
 config.json
 /chathistory/
 credentials.json
+cogs/local.py
+config.json.local
