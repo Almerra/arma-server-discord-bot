@@ -28,22 +28,21 @@ configuration (see [config.json.template](config.json.template)):
 Set `mission_folder_path` to the actual missions directory used by the panel's
 `games.arma3.missionPath`. This is an example path, not an automatically
 discovered location. If the directory exists on the bot host, the bot saves
-there using atomic replacement, then requests a panel mission-list refresh.
+there using atomic replacement without contacting the panel.
 If empty or missing, it uploads through the configured AM2 panel `address`.
 A permissions/write error in an existing local directory is reported, not
 silently retried through the panel.
 
-The command defaults to game `arma3`; its optional `game` argument selects the
-game ID for web-panel uploads. Local saves always use `mission_folder_path`,
-so that folder must match the selected game.
+Uploads use game `arma3`. Local saves use `mission_folder_path`,
+so that folder must match the game's missions directory.
 
 The bot reuses `arma_server_web_admin.am2.public_username` and
 `public_password`. That panel account needs `missions.create`
-permission for uploads and `missions.view` for refreshes. The bot uses the
+permission for web uploads. The bot uses the
 panel's `/api/session` cookie login, not individual `/server_login` credentials.
 Use HTTPS unless the panel connection is on a trusted local network. Credentials
-are unnecessary for a local save, but without them the bot warns that the panel
-list could not be refreshed.
+and a panel connection are unnecessary for a local save. Direct local saves do
+not refresh the panel's cached mission list.
 
 For remote replacement, deploy the companion panel update to
 `lib/missions.js`: older panel versions reject an existing filename.

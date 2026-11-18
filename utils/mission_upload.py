@@ -18,7 +18,6 @@ class MissionUploadError(Exception):
 class MissionUploadResult:
     filename: str
     local: bool
-    refresh_error: str = ""
 
 
 def mission_filename(filename: str) -> str:
@@ -68,7 +67,6 @@ async def _panel_transfer(
     game: str,
     username: str,
     password: str,
-    refresh_only: bool,
 ) -> None:
     if not address or not username or not password:
         raise MissionUploadError("The mission upload panel address or bot-account credentials are not configured.")
@@ -90,12 +88,6 @@ async def _panel_transfer(
             body = await response.json()
             if not isinstance(body, dict) or body.get("success") is not True:
                 raise MissionUploadError("The panel did not confirm a successful login.")
-
-        if refresh_only:
-            async with session.post(f"{base}/api/missions/refresh", allow_redirects=False) as response:
-                if response.status != 204:
-                    raise MissionUploadError(f"Panel mission-list refresh failed (HTTP {response.status}).")
-            return
 
         with tempfile.TemporaryDirectory(prefix="mission-upload-") as directory, open(
             Path(directory) / filename, "w+b"
@@ -131,14 +123,9 @@ async def upload_mission(
     local = bool(local_path) and await asyncio.to_thread(_local_directory, Path(local_path))
     if local:
         await _save_local(attachment, Path(local_path), filename)
-    try:
+    else:
         await _panel_transfer(
             attachment, filename, address=address, game=game,
-            username=username, password=password, refresh_only=local,
+            username=username, password=password,
         )
-    except (MissionUploadError, aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
-        if not local:
-            raise
-        detail = str(error) if isinstance(error, MissionUploadError) else type(error).__name__
-        return MissionUploadResult(filename, True, f"Mission saved, but the panel list could not be refreshed: {detail}")
     return MissionUploadResult(filename, local)

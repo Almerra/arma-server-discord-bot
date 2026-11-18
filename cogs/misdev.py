@@ -190,9 +190,6 @@ class MisdevOffice(commands.Cog, name="misdev"):
 
         destination = "the local missions folder" if result.local else "the web panel"
         message = f"Uploaded `{result.filename}` to {destination}. Any previous version was replaced."
-        if result.refresh_error:
-            self.bot.logger.warning("Mission %s: %s", result.filename, result.refresh_error)
-            message += f"\nWarning: {result.refresh_error}"
         self.bot.logger.info(
             "User %s uploaded mission %s via %s", interaction.user.id, result.filename, destination
         )

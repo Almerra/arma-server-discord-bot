@@ -1,4 +1,3 @@
-import asyncio
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,13 +33,13 @@ class MissionUploadTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
         self.uploads = []
-        self.refreshes = 0
+        self.logins = 0
         self.login_status = 200
         self.upload_status = 200
-        self.refresh_status = 204
         self.upload_body = {"success": True}
 
         async def login(request):
+            self.logins += 1
             self.assertEqual(request.headers.get("X-Requested-With"), "XMLHttpRequest")
             self.assertEqual(await request.json(), {"username": "bot", "password": "test-password"})
             response = web.json_response({"success": True}, status=self.login_status)
@@ -58,15 +57,9 @@ class MissionUploadTests(unittest.IsolatedAsyncioTestCase):
             self.uploads.append((mission.filename, bytes(await mission.read())))
             return web.json_response(self.upload_body, status=self.upload_status)
 
-        async def refresh(request):
-            self.assertEqual(request.cookies.get("connect.sid"), "test-session")
-            self.refreshes += 1
-            return web.Response(status=self.refresh_status)
-
         app = web.Application()
         app.router.add_post("/api/session", login)
         app.router.add_post("/api/missions", upload)
-        app.router.add_post("/api/missions/refresh", refresh)
         self.server = TestServer(app)
         await self.server.start_server()
         self.addAsyncCleanup(self.server.close)
@@ -76,13 +69,15 @@ class MissionUploadTests(unittest.IsolatedAsyncioTestCase):
             "password": "test-password",
         }
 
-    async def test_local_replaces_and_refreshes_without_http_upload(self):
+    async def test_local_replaces_without_contacting_panel(self):
         target = self.path / "operation.altis.pbo"
         target.write_bytes(b"old")
-        result = await upload_mission(attachment(), local_path=str(self.path), **self.options)
+        with patch("utils.mission_upload.aiohttp.ClientSession") as session:
+            result = await upload_mission(attachment(), local_path=str(self.path), **self.options)
+        session.assert_not_called()
         self.assertEqual(result, MissionUploadResult("operation.altis.pbo", True))
         self.assertEqual(target.read_bytes(), b"mission")
-        self.assertEqual(self.refreshes, 1)
+        self.assertEqual(self.logins, 0)
         self.assertEqual(self.uploads, [])
         self.assertEqual(list(self.path.iterdir()), [target])
 
@@ -128,23 +123,11 @@ class MissionUploadTests(unittest.IsolatedAsyncioTestCase):
             await upload_mission(attachment(), local_path=str(target), **self.options)
         self.assertEqual(self.uploads, [])
 
-    async def test_refresh_failure_reports_saved_file(self):
-        self.refresh_status = 403
-        result = await upload_mission(attachment(), local_path=str(self.path), **self.options)
-        self.assertTrue(result.local)
-        self.assertIn("HTTP 403", result.refresh_error)
-        self.assertTrue((self.path / result.filename).exists())
-
-    async def test_local_save_without_credentials_reports_refresh_warning(self):
-        result = await upload_mission(attachment(), address="", local_path=str(self.path))
-        self.assertIn("not configured", result.refresh_error)
-        self.assertTrue((self.path / result.filename).exists())
-
-    async def test_refresh_timeout_still_reports_local_save(self):
-        with patch("utils.mission_upload._panel_transfer", side_effect=asyncio.TimeoutError):
-            result = await upload_mission(attachment(), local_path=str(self.path), **self.options)
-        self.assertTrue(result.local)
-        self.assertTrue(result.refresh_error)
+    async def test_local_save_needs_no_panel_configuration(self):
+        with patch("utils.mission_upload._panel_transfer", new_callable=AsyncMock) as transfer:
+            result = await upload_mission(attachment(), address="", local_path=str(self.path))
+        transfer.assert_not_awaited()
+        self.assertEqual(result, MissionUploadResult("operation.altis.pbo", True))
         self.assertTrue((self.path / result.filename).exists())
 
     async def test_remote_requires_credentials_before_downloading(self):
@@ -253,10 +236,8 @@ class MissionUploadCommandTests(unittest.IsolatedAsyncioTestCase):
         self.interaction.response.defer.assert_awaited_with(ephemeral=True, thinking=True)
         self.assertEqual(self.bot.arma_server_web_admin.mission_upload.call_args.kwargs["game"], "arma3")
 
-    async def test_explicit_game_is_forwarded(self):
-        await MisdevOffice.mission_upload.callback(
-            self.cog, self.interaction, attachment(), game="custom"
-        )
+    async def test_upload_helper_forwards_explicit_game(self):
+        await self.cog._upload_mission(self.interaction, attachment(), game="custom")
         self.assertEqual(self.bot.arma_server_web_admin.mission_upload.call_args.kwargs["game"], "custom")
 
     async def test_unauthorized_wrong_guild_and_dm_cannot_upload(self):
@@ -285,14 +266,6 @@ class MissionUploadCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.invoke()
         self.assertIn("Mission upload failed", self.interaction.followup.send.call_args.args[0])
         self.bot.logger.exception.assert_called_once()
-
-    async def test_refresh_warning_is_reported_and_logged(self):
-        self.bot.arma_server_web_admin.mission_upload.return_value = MissionUploadResult(
-            "operation.altis.pbo", True, "Refresh failed"
-        )
-        await self.invoke()
-        self.assertIn("Refresh failed", self.interaction.followup.send.call_args.args[0])
-        self.bot.logger.warning.assert_called_once()
 
     async def invoke_menu(self, attachments):
         source = SimpleNamespace(
