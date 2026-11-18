@@ -7,12 +7,18 @@ import re
 import aiohttp
 from bs4 import BeautifulSoup
 from datetime import datetime
+from urllib.parse import urlparse
+from utils.battalions import battalion_autocomplete, resolve_battalion
+
+office_battalions = battalion_autocomplete(office="server_admin_office")
+panel_battalions = battalion_autocomplete(panel=True)
 
 
 class ModRequestModal(discord.ui.Modal, title="Mod Request Form"):
-    def __init__(self, bot) -> None:
+    def __init__(self, bot, battalion: str) -> None:
         super().__init__(title=f"Mod Request Form")
         self.bot = bot
+        self.battalion = battalion
 
     mod_type = discord.ui.Label(
         text="Mod Type",
@@ -47,16 +53,16 @@ class ModRequestModal(discord.ui.Modal, title="Mod Request Form"):
 
             # Get users to mention, should be SAO + requester
             mentions = f"<@{interaction.user.id}>"
-            for moderators in self.bot.config['discord']['server_admin_office']['forum_moderators']:
+            for moderators in self.bot.config['discord'][self.battalion]['server_admin_office']['forum_moderators']:
                 mentions += f" <@&{moderators}>"
 
             self.answer_post = f"||{mentions}||\n# {self.answer_title}\n{self.mod_link}\n### Description\n{self.mod_description}\n\n-# Please react and discuss the requested mod below, the server admin office will prioritise mods which have the most interest. You can show interest by reacting to this post.\n"
 
             # Get the forum channel and tags to post with based on mod type.
-            forum_channel = self.bot.get_channel(int(self.bot.config['discord']['server_admin_office']['forum_channel_id']))
+            forum_channel = self.bot.get_channel(int(self.bot.config['discord'][self.battalion]['server_admin_office']['forum_channel_id']))
             tags = [
-                forum_channel.get_tag(int(self.bot.config['discord']['server_admin_office']['forum_tags']['pending_review'])),
-                forum_channel.get_tag(int(self.bot.config['discord']['server_admin_office']['forum_tags'][self.answer_type]))
+                forum_channel.get_tag(int(self.bot.config['discord'][self.battalion]['server_admin_office']['forum_tags']['pending_review'])),
+                forum_channel.get_tag(int(self.bot.config['discord'][self.battalion]['server_admin_office']['forum_tags'][self.answer_type]))
             ]
 
             # Post the thread in the forum channel with the correct tags based on mod type.
@@ -67,7 +73,7 @@ class ModRequestModal(discord.ui.Modal, title="Mod Request Form"):
             await self.post[1].add_reaction("👎")
 
             # Post to the mod discussion page for people to see
-            mod_discussion_channel = self.bot.get_channel(int(self.bot.config['discord']['server_admin_office']['suggestion_channel_id']))
+            mod_discussion_channel = self.bot.get_channel(int(self.bot.config['discord'][self.battalion]['server_admin_office']['suggestion_channel_id']))
             await mod_discussion_channel.send(embed=discord.Embed(description=f"<@{interaction.user.id}> has submitted a mod request: <#{self.post[1].id}>", color=0xBEBEFE, ))
 
             # Respond to the interaction
@@ -87,9 +93,10 @@ class ModRequestModal(discord.ui.Modal, title="Mod Request Form"):
 
 
 class BugReportModal(discord.ui.Modal, title="Bug Report Form"):
-    def __init__(self, bot) -> None:
+    def __init__(self, bot, battalion: str) -> None:
         super().__init__(title="Bug Report Form")
         self.bot = bot
+        self.battalion = battalion
 
     bug_title = discord.ui.TextInput(style=discord.TextStyle.short, label="Bug Title", required=True, placeholder="")
     bug_description = discord.ui.TextInput(style=discord.TextStyle.long, label="Bug Description", required=True, placeholder="Tell us about the bug, what issue is happening, how does it happen? Any steps to reproduce?")
@@ -99,12 +106,12 @@ class BugReportModal(discord.ui.Modal, title="Bug Report Form"):
         self.answer_title = str(self.bug_title)
         self.answer_description = str(self.bug_description)
         mentions = f"<@{interaction.user.id}>"
-        for moderators in self.bot.config['discord']['server_admin_office']['forum_moderators']:
+        for moderators in self.bot.config['discord'][self.battalion]['server_admin_office']['forum_moderators']:
             mentions += f" <@&{moderators}>"
         self.answer_post = f"||{mentions}||\n# {self.answer_title}\n### Description\n{self.answer_description}\n\n-# If you have any evidence or further information, please post it below. The server admin office will look to resolve the issue as soon as possible.\n"
 
-        forum_channel = self.bot.get_channel(int(self.bot.config['discord']['server_admin_office']['forum_channel_id']))
-        tags = [forum_channel.get_tag(int(self.bot.config['discord']['server_admin_office']['forum_tags']['bug'])), forum_channel.get_tag(int(self.bot.config['discord']['server_admin_office']['forum_tags']['pending_review']))]
+        forum_channel = self.bot.get_channel(int(self.bot.config['discord'][self.battalion]['server_admin_office']['forum_channel_id']))
+        tags = [forum_channel.get_tag(int(self.bot.config['discord'][self.battalion]['server_admin_office']['forum_tags']['bug'])), forum_channel.get_tag(int(self.bot.config['discord'][self.battalion]['server_admin_office']['forum_tags']['pending_review']))]
         self.post = await forum_channel.create_thread(name=f"Bug Report: {self.answer_title}", applied_tags=tags, content=self.answer_post)
 
         # Respond to the interaction
@@ -114,8 +121,6 @@ class BugReportModal(discord.ui.Modal, title="Bug Report Form"):
 
 
 class StartStopButtonSelection(discord.ui.View):
-    server_options = []
-
     def __init__(self, server, message_context: Context, server_list: list = [], server_type: str = ""):
         super().__init__()
         self.server = server
@@ -123,23 +128,31 @@ class StartStopButtonSelection(discord.ui.View):
         self.server_list = server_list
         self.message_context = message_context
 
-        for server_id in server_list:
-            self.server_options.append(discord.SelectOption(label=server_id))
+        self.serverSelect.options = [discord.SelectOption(label=server_id) for server_id in server_list]
+        self.server_id = None
 
-    @discord.ui.select(placeholder="server_id", min_values=1, max_values=1, options=server_options, custom_id="server_select")
+    @discord.ui.select(placeholder="server_id", min_values=1, max_values=1, custom_id="server_select")
     async def serverSelect(self, interaction: discord.Integration, select: discord.ui.Select):
         await interaction.response.defer()
         self.server_id = select.values[0]
 
     @discord.ui.button(label="Start", style=discord.ButtonStyle.green, custom_id="server_start")
     async def serverStartButton(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.server_id is None:
+            await interaction.response.send_message("Select a server first.", ephemeral=True)
+            return
         await interaction.response.defer()
-        await ServerAdminOffice.server_start(self.server, self.message_context, self.server_id, "am2")
+        context = await commands.Context.from_interaction(interaction)
+        await ServerAdminOffice.server_start.callback(self.server, context, self.server_id, self.server_type)
 
     @discord.ui.button(label="Stop", style=discord.ButtonStyle.red, custom_id="server_stop")
     async def serverStopButton(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.server_id is None:
+            await interaction.response.send_message("Select a server first.", ephemeral=True)
+            return
         await interaction.response.defer()
-        await ServerAdminOffice.server_stop(self.server, self.message_context, self.server_id, "am2")
+        context = await commands.Context.from_interaction(interaction)
+        await ServerAdminOffice.server_stop.callback(self.server, context, self.server_id, self.server_type)
 
 
 class StartStopButton(discord.ui.View):
@@ -150,8 +163,6 @@ class StartStopButton(discord.ui.View):
         self.server_type = server_type
         self.message_context = message_context
 
-    # @discord.ui.button(label="Start", style=discord.ButtonStyle.green, custom_id="server_start")  # async def serverStartButton(self, interaction: discord.Interaction, button: discord.ui.Button):  #     await ServerAdminOffice.server_start(self.server, self.message_context, self.server_id, "am2")
-    # @discord.ui.button(label="Stop", style=discord.ButtonStyle.red, custom_id="server_stop")  # async def serverStopButton(self, interaction: discord.Interaction, button: discord.ui.Button):  #     await ServerAdminOffice.server_stop(self.server, self.message_context, self.server_id, "am2")
 
 
 class ServerForumButton(discord.ui.View):
@@ -161,12 +172,18 @@ class ServerForumButton(discord.ui.View):
 
     @discord.ui.button(label="Request Mod", style=discord.ButtonStyle.blurple, custom_id='sao_info:mod_suggest_serverside')
     async def modRequestServerButton(self, interaction: discord.Interaction, button: discord.ui.Button):
-        mod_request_modal = ModRequestModal(self.bot)
+        unit = await resolve_battalion(interaction, office="server_admin_office")
+        if unit is None:
+            return
+        mod_request_modal = ModRequestModal(self.bot, unit.key)
         await interaction.response.send_modal(mod_request_modal)
 
     @discord.ui.button(label="Bug Report", style=discord.ButtonStyle.red, custom_id='sao_info:bug_report')
     async def bugReportButton(self, interaction: discord.Interaction, button: discord.ui.Button):
-        bug_report_modal = BugReportModal(self.bot)
+        unit = await resolve_battalion(interaction, office="server_admin_office")
+        if unit is None:
+            return
+        bug_report_modal = BugReportModal(self.bot, unit.key)
         await interaction.response.send_modal(bug_report_modal)
 
 
@@ -189,7 +206,8 @@ class ServerAdminOffice(commands.Cog, name="server"):
         await context.send(embed=embed, view=ServerForumButton(self.bot))
 
     @app_commands.command(name="mod_request", description="Post a mod suggestion to the server forum", )
-    async def mod_request(self, interaction: discord.Interaction) -> None:
+    @app_commands.autocomplete(battalion=office_battalions)
+    async def mod_request(self, interaction: discord.Interaction, battalion: str | None = None) -> None:
 
         # Return not configured error embed to interaction if executed in the wrong guild.
         if interaction.guild.id != self.bot.config['discord']['guild_id']:
@@ -197,30 +215,38 @@ class ServerAdminOffice(commands.Cog, name="server"):
             return
 
         # Send the modal the user andd wait response.
-        mod_request_modal = ModRequestModal(self.bot)
+        unit = await resolve_battalion(interaction, battalion, office="server_admin_office")
+        if unit is None:
+            return
+        mod_request_modal = ModRequestModal(self.bot, unit.key)
         await interaction.response.send_modal(mod_request_modal)
         await mod_request_modal.wait()
         interaction = mod_request_modal.interaction
 
     @app_commands.command(name="bug_report", description="Post a bug report to the server forum", )
-    async def bug_report(self, interaction: discord.Interaction) -> None:
+    @app_commands.autocomplete(battalion=office_battalions)
+    async def bug_report(self, interaction: discord.Interaction, battalion: str | None = None) -> None:
         # Return not configured error embed to interaction if executed in the wrong guild.
         if interaction.guild.id != self.bot.config['discord']['guild_id']:
             await interaction.response.send_message(embed=await not_configured_embed(self), ephemeral=True)
             return
 
         # Send the modal the user andd wait response.
-        bug_report_modal = BugReportModal(self.bot)
+        unit = await resolve_battalion(interaction, battalion, office="server_admin_office")
+        if unit is None:
+            return
+        bug_report_modal = BugReportModal(self.bot, unit.key)
         await interaction.response.send_modal(bug_report_modal)
         await bug_report_modal.wait()
         interaction = bug_report_modal.interaction
 
     param_server_id = "The 'nickname' or 'id' of the server in the web panel."
-    param_server_type = "The type of server that should be referenced, options currently are 'am2'."
+    param_server_type = "The battalion's configured server panel."
 
     @commands.hybrid_command(name="server_start", description="Start a specific server using the server id reference.", )
+    @app_commands.autocomplete(server_type=panel_battalions)
     @app_commands.describe(server_id=param_server_id, server_type=param_server_type)
-    async def server_start(self, context: Context, server_id: str, server_type: str = "am2") -> None:
+    async def server_start(self, context: Context, server_id: str, server_type: str | None = None) -> None:
         """
         Start a specific server using the server id reference.
 
@@ -228,6 +254,11 @@ class ServerAdminOffice(commands.Cog, name="server"):
         :param server_id: The server ID which should be started.
         :param server_type: The server address which should be referenced.
         """
+        unit = await resolve_battalion(context, server_type, panel=True)
+        if unit is None:
+            return
+        server_type = unit.key
+
         response = await self.bot.arma_server_web_admin.server_start(context.author.id, context.guild.id, server_type, server_id)
         if response.status == 200:
             embed = discord.Embed(title="Server Started", description=f"The server (`{server_id}`) has been started.", color=0xBEBEFE)
@@ -247,14 +278,20 @@ class ServerAdminOffice(commands.Cog, name="server"):
             await context.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="server_stop", description=" Stop a specific server using the server id reference.", )
+    @app_commands.autocomplete(server_type=panel_battalions)
     @app_commands.describe(server_id=param_server_id, server_type=param_server_type)
-    async def server_stop(self, context: Context, server_id: str, server_type: str = "am2") -> None:
+    async def server_stop(self, context: Context, server_id: str, server_type: str | None = None) -> None:
         """
         Stop a specific server using the server id reference.
 
         :param context: The hybrid command context.
         :param server_id: The server which should be started.
         """
+        unit = await resolve_battalion(context, server_type, panel=True)
+        if unit is None:
+            return
+        server_type = unit.key
+
         response = await self.bot.arma_server_web_admin.server_stop(context.author.id, context.guild.id, server_type, server_id)
         if response.status == 200:
             embed = discord.Embed(title="Server Stopped", description=f"The server (`{server_id}`) has been stopped.", color=0xBEBEFE)
@@ -273,26 +310,20 @@ class ServerAdminOffice(commands.Cog, name="server"):
             embed.set_footer(text=f"{response.url}")
             await context.send(embed=embed, ephemeral=True)
 
-    @commands.hybrid_command(name="server_upload", description="Upload a .pbo mission file directly to the server.", )
-    @app_commands.describe(mission_pbo="The .pbo file for mission you wish to upload to the server.", server_type=param_server_type)
-    async def server_mission_upload(self, context: Context, mission_pbo: discord.Attachment, server_type: str = "am2") -> None:
-        """
-        Upload a .pbo mission file directly to the server.
-
-        :param context: The hybrid command context.
-        :param mission_pbo: The server which should be started.
-        """
-
-        pass
-
     @commands.hybrid_command(name="server_list", description="List the available server_ids on the web panel.", )
+    @app_commands.autocomplete(server_type=panel_battalions)
     @app_commands.describe(server_type=param_server_type)
-    async def server_list(self, context: Context, server_type: str = "am2") -> None:
+    async def server_list(self, context: Context, server_type: str | None = None) -> None:
         """
         List the available server IDs to be used in other commands.
 
         :param context: The hybrid command context.
         """
+        unit = await resolve_battalion(context, server_type, panel=True)
+        if unit is None:
+            return
+        server_type = unit.key
+
         response = await self.bot.arma_server_web_admin.get_server_config(context.author.id, context.guild.id, server_type)
         if response.status == 200 and response.json_content:
             server_list = []
@@ -358,13 +389,19 @@ class ServerAdminOffice(commands.Cog, name="server"):
             await context.send(embed=status_embed, ephemeral=True)
 
     @commands.hybrid_command(name="server_login", description="Setup your web panel information in discord so you can use the server commands.", )
+    @app_commands.autocomplete(server_type=panel_battalions)
     @app_commands.describe(server_type=param_server_type)
-    async def server_login(self, context: Context, username: str, password: str, server_type: str = "am2") -> None:
+    async def server_login(self, context: Context, username: str, password: str, server_type: str | None = None) -> None:
         """
         Setup your web panel information in discord so you can use the discord commands to interact with the servers directly.
 
         :param context: The hybrid command context.
         """
+        unit = await resolve_battalion(context, server_type, panel=True)
+        if unit is None:
+            return
+        server_type = unit.key
+
         # member = context.guild.get_member(user.id) or await context.guild.fetch_member(
         #     user.id
         # )
@@ -378,7 +415,8 @@ class ServerAdminOffice(commands.Cog, name="server"):
         await context.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="server_update", description="Run the server updater script.")
-    async def server_update(self, context: Context) -> None:
+    @app_commands.autocomplete(battalion=panel_battalions)
+    async def server_update(self, context: Context, battalion: str | None = None) -> None:
         """
         Call a python script from a specific working directory on the same machine that runs the server update script, this is used to update the server files from steamcmd and also update any mods from the steam workshop.
 
@@ -388,14 +426,24 @@ class ServerAdminOffice(commands.Cog, name="server"):
         if context.guild.id != self.bot.config['discord']['guild_id']:
             await context.send(embed=await not_configured_embed(self), ephemeral=True)
             return
+        unit = await resolve_battalion(context, battalion, panel=True)
+        if unit is None:
+            return
+        command = self.bot.config['arma_server_web_admin'][unit.key].get('update_command')
+        if not command:
+            await context.send("No updater command is configured for this battalion.", ephemeral=True)
+            return
         # Check if roles are in admin leader roles:
 
-        allowed_roles = [*self.bot.config['discord']['am2']['roles']["admin_leaders"], *self.bot.config['discord']['am2']['roles']["server_techs"]]
+        allowed_roles = [
+            int(role) for name in ("admin_leaders", "server_techs")
+            for role in unit.settings.get("roles", {}).get(name, [])
+        ]
         if not any(role.id in allowed_roles for role in context.author.roles):
             await context.send(embed=await unauthorised_embed(self), ephemeral=True)
             return
         await context.defer(ephemeral=True)
-        response = await self.bot.run_command(self.bot.config['arma_server_web_admin']['am2']['update_command'])
+        response = await self.bot.run_command(command)
 
         if response == 200:
             embed = discord.Embed(title="Server Update", description=f"The server update script has been executed.", color=0xBEBEFE)
@@ -546,7 +594,7 @@ async def get_workshop_info(mod_id) -> dict:
     return mod_info
 
 
-async def get_user_authentication(self, user_id: str, guild_id: str, server_type: str = "am2") -> None:
+async def get_user_authentication(self, user_id: str, guild_id: str, server_type: str) -> None:
     authentication = await self.bot.database.get_server_authentication(user_id, guild_id, server_type)
     # print(authentication, base64.b64encode(f"{authentication['username']}:{authentication['password']}".encode()).decode())
     return base64.b64encode(f"{authentication['username']}:{authentication['password']}".encode()).decode()

@@ -1,27 +1,26 @@
 {
   "prefix": "",
-  "arma_server_web_admin" : {
-    "arma3" : {
+  "arma_server_web_admin": {
+    "arma3": {
       "address": "",
       "public_username": "",
       "public_password": ""
     },
-    "am2" : {
+    "am2": {
       "address": "",
       "public_username": "",
       "public_password": "",
       "mission_folder_path": ""
     },
-    "am1" : {
+    "am1": {
       "address": "",
       "public_username": "",
       "public_password": ""
     }
-
   },
   "taw": {
-    "address":"",
-    "user_api":""
+    "address": "",
+    "user_api": ""
   },
   "reddit": {
     "secret": "",
@@ -30,42 +29,58 @@
   "discord": {
     "guild_id": 1111111111111111111,
     "invite_link": "https://discord.com/oauth2/authorize?client_id=1111111111111111111",
-    "server_admin_office": {
-      "office_channel_id": 1111111111111111111,
-      "suggestion_channel_id": 1111111111111111111,
-      "forum_channel_id": 1111111111111111111,
-      "forum_moderators": [1111111111111111111],
-      "forum_tags": {
-        "serverside": 1111111111111111111,
-        "clientside": 1111111111111111111,
-        "map": 1111111111111111111,
-        "bug": 1111111111111111111,
-        "suggestion": 1111111111111111111,
-        "pending_testing": 1111111111111111111,
-        "pending_review": 1111111111111111111,
-        "closed": 1111111111111111111,
-        "approved": 1111111111111111111,
-        "rejected": 1111111111111111111
+    "am2": {
+      "name": "2nd Battalion",
+      "server_admin_office": {
+        "office_channel_id": 1111111111111111111,
+        "suggestion_channel_id": 1111111111111111111,
+        "forum_channel_id": 1111111111111111111,
+        "forum_moderators": [
+          1111111111111111111
+        ],
+        "forum_tags": {
+          "serverside": 1111111111111111111,
+          "clientside": 1111111111111111111,
+          "map": 1111111111111111111,
+          "bug": 1111111111111111111,
+          "suggestion": 1111111111111111111,
+          "pending_testing": 1111111111111111111,
+          "pending_review": 1111111111111111111,
+          "closed": 1111111111111111111,
+          "approved": 1111111111111111111,
+          "rejected": 1111111111111111111
+        }
+      },
+      "recruitment_headquarters": {
+        "office_channel_id": 1111111111111111111
+      },
+      "combat_training_centre": {
+        "site_url": "",
+        "office_channel_id": 1111111111111111111,
+        "catalogue": "catalogue.json",
+        "queue_channel_id": 1111111111111111111,
+        "instructor_role_id": 1111111111111111111,
+        "manager_ids": []
+      },
+      "field_specialist_office": {
+        "office_channel_id": 1111111111111111111
+      },
+      "mission_development": {
+        "office_channel_id": 1111111111111111111,
+        "forum_channel_id": 1111111111111111111,
+        "forum_moderators": [
+          1111111111111111111
+        ],
+        "forum_tags": {
+          "pending_testing": 1111111111111111111,
+          "played": 1111111111111111111,
+          "rejected": 1111111111111111111
+        }
       }
     },
-    "recruitment_headquarters": {
-      "office_channel_id": 1111111111111111111
-    },
-    "combat_training_centre": {
-      "office_channel_id": 1111111111111111111
-    },
-    "field_specialist_office": {
-      "office_channel_id": 1111111111111111111
-    },
-    "mission_development": {
-      "office_channel_id": 1111111111111111111,
-      "forum_channel_id": 1111111111111111111,
-      "forum_moderators": [1111111111111111111],
-      "forum_tags": {
-        "pending_testing": 1111111111111111111,
-        "played": 1111111111111111111,
-        "rejected": 1111111111111111111
-      }
-    }
+    "am1": {},
+    "am3": {},
+    "am4": {},
+    "default_battalion": "am2"
   }
 }

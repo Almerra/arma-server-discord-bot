@@ -7,12 +7,17 @@ import asyncio
 import aiohttp
 from datetime import datetime, timedelta
 from utils.mission_upload import MissionUploadError, mission_filename
+from utils.battalions import battalion_autocomplete, resolve_battalion
+
+mission_battalions = battalion_autocomplete(office="mission_development")
+upload_battalions = battalion_autocomplete(office="mission_development", panel=True)
 
 class MissionSubmissionModal(discord.ui.Modal, title="Mission Submission Form"):
-    def __init__(self, bot, mission_pbo: discord.Attachment) -> None:
+    def __init__(self, bot, mission_pbo: discord.Attachment, battalion: str) -> None:
         super().__init__(title=f"Mission Submission Form")
         self.bot = bot
         self.mission_pbo = mission_pbo
+        self.battalion = battalion
 
     mission_title = discord.ui.TextInput(style=discord.TextStyle.short, label="Mission Title", required=True, placeholder="Operation Stinky")
     mission_description = discord.ui.TextInput(style=discord.TextStyle.long, label="Description", required=False, placeholder="A short description of the mission and objectives.", max_length=1600)
@@ -33,12 +38,12 @@ class MissionSubmissionModal(discord.ui.Modal, title="Mission Submission Form"):
 
         #Get users to mention, should be the user who submitted the mission and the forum moderators.
         mentions = f"<@{interaction.user.id}>"
-        for moderators in self.bot.config['discord']['mission_development']['forum_moderators']:
+        for moderators in self.bot.config['discord'][self.battalion]['mission_development']['forum_moderators']:
             mentions += f" <@&{moderators}>"
         answer_post = f"||{mentions}||\n# {answer_title}\n{answer_description}\n\n**Map:** {answer_map}\n**Briefing:** {answer_briefing}\n**Conceptboard:** {answer_conceptboard}\n\n"
 
-        forum_channel = self.bot.get_channel(int(self.bot.config['discord']['mission_development']['forum_channel_id']))
-        tags = [forum_channel.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['pending_review']))]
+        forum_channel = self.bot.get_channel(int(self.bot.config['discord'][self.battalion]['mission_development']['forum_channel_id']))
+        tags = [forum_channel.get_tag(int(self.bot.config['discord'][self.battalion]['mission_development']['forum_tags']['pending_review']))]
 
         # Prepare pbo file for upload
         pbo_file = await self.mission_pbo.to_file(use_cached=False, spoiler=False)
@@ -54,7 +59,7 @@ class MissionSubmissionModal(discord.ui.Modal, title="Mission Submission Form"):
 
         # Lets ping the head of misdev to ensure they are aware of the submission and can review it.
         mentions = ""
-        for moderators in self.bot.config['discord']['mission_development']['forum_moderators']:
+        for moderators in self.bot.config['discord'][self.battalion]['mission_development']['forum_moderators']:
            mentions += f" <@&{moderators}>"
 
         await self.post[0].send(f"""{mentions} will look to review this mission submission as soon as possible, please be patient.""")
@@ -119,11 +124,12 @@ class MisdevOffice(commands.Cog, name="misdev"):
     async def upload_mission_message(self, interaction: discord.Interaction, message: discord.Message) -> None:
         await self._upload_mission(interaction, source_message=message)
 
-    @app_commands.command(name="mission_upload", description="Upload a .pbo mission directly to the AM2 server, replacing an existing version.")
+    @app_commands.command(name="mission_upload", description="Upload a .pbo mission to a battalion server, replacing an existing version.")
     @app_commands.describe(mission_pbo="The .pbo mission file to upload.")
     @app_commands.guild_only()
-    async def mission_upload(self, interaction: discord.Interaction, mission_pbo: discord.Attachment) -> None:
-        await self._upload_mission(interaction, mission_pbo)
+    @app_commands.autocomplete(battalion=upload_battalions)
+    async def mission_upload(self, interaction: discord.Interaction, mission_pbo: discord.Attachment, battalion: str | None = None) -> None:
+        await self._upload_mission(interaction, mission_pbo, battalion=battalion)
 
     async def _upload_mission(
         self,
@@ -132,16 +138,23 @@ class MisdevOffice(commands.Cog, name="misdev"):
         game: str = "arma3",
         *,
         source_message: discord.Message | None = None,
+        battalion: str | None = None,
     ) -> None:
         if interaction.guild is None or interaction.guild.id != self.bot.config['discord']['guild_id']:
             await interaction.response.send_message(embed=await not_configured_embed(self), ephemeral=True)
             return
 
-        settings = self.bot.config['discord']
+        unit = await resolve_battalion(
+            interaction, battalion, office="mission_development", panel=True,
+            channel=source_message.channel if source_message is not None else None,
+        )
+        if unit is None:
+            return
+        settings = unit.settings
         allowed_roles = {
             int(role_id)
             for office in ('mission_development', 'server_admin_office')
-            for role_id in settings[office]['forum_moderators']
+            for role_id in settings.get(office, {}).get('forum_moderators', [])
         }
         if not isinstance(interaction.user, discord.Member) or not any(
             role.id in allowed_roles for role in interaction.user.roles
@@ -178,7 +191,7 @@ class MisdevOffice(commands.Cog, name="misdev"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             result = await self.bot.arma_server_web_admin.mission_upload(
-                interaction.user.id, interaction.guild.id, "am2", pbo_upload=mission_pbo, game=game
+                interaction.user.id, interaction.guild.id, unit.key, pbo_upload=mission_pbo, game=game
             )
         except (MissionUploadError, aiohttp.ClientError, discord.HTTPException, asyncio.TimeoutError, OSError, ValueError, KeyError) as error:
             self.bot.logger.exception("Mission upload failed for user %s", interaction.user.id)
@@ -189,7 +202,7 @@ class MisdevOffice(commands.Cog, name="misdev"):
             return
 
         destination = "the local missions folder" if result.local else "the web panel"
-        message = f"Uploaded `{result.filename}` to {destination}. Any previous version was replaced."
+        message = f"Uploaded `{result.filename}` to {destination} for {unit.name}. Any previous version was replaced."
         self.bot.logger.info(
             "User %s uploaded mission %s via %s", interaction.user.id, result.filename, destination
         )
@@ -197,7 +210,8 @@ class MisdevOffice(commands.Cog, name="misdev"):
 
     @app_commands.command(name="mission_submission", description="Submit a mission to misdev who will review and schedule it to be played.", )
     @app_commands.describe(mission_pbo="The .pbo file for mission you are submitting.")
-    async def mission_submission(self, interaction: discord.Interaction, mission_pbo: discord.Attachment) -> None:
+    @app_commands.autocomplete(battalion=mission_battalions)
+    async def mission_submission(self, interaction: discord.Interaction, mission_pbo: discord.Attachment, battalion: str | None = None) -> None:
         # Return not configured error embed to interaction if executed in the wrong guild.
         if interaction.guild.id != self.bot.config['discord']['guild_id']:
             await interaction.response.send_message(embed=await not_configured_embed(self), ephemeral=True)
@@ -208,19 +222,26 @@ class MisdevOffice(commands.Cog, name="misdev"):
             return
 
         # Send the modal the user and wait for a response.
-        mission_submission_modal = MissionSubmissionModal(self.bot, mission_pbo)
+        unit = await resolve_battalion(interaction, battalion, office="mission_development")
+        if unit is None:
+            return
+        mission_submission_modal = MissionSubmissionModal(self.bot, mission_pbo, unit.key)
         await interaction.response.send_modal(mission_submission_modal)
         # await mission_submission_modal.wait()
         # interaction = mission_submission_modal.interaction
 
     @app_commands.command(name="mission_feedback", description="Feedback on a mission just played, be sure to run this in the forum thread directly.", )
-    async def mission_feedback(self, interaction: discord.Interaction) -> None:
+    @app_commands.autocomplete(battalion=mission_battalions)
+    async def mission_feedback(self, interaction: discord.Interaction, battalion: str | None = None) -> None:
         # Return not configured error embed to interaction if executed in the wrong guild.
         if interaction.guild.id != self.bot.config['discord']['guild_id']:
             await interaction.response.send_message(embed=await not_configured_embed(self), ephemeral=True)
             return
 
-        if interaction.channel.parent_id != int(self.bot.config['discord']['mission_development']['forum_channel_id']) or not "Mission:" in interaction.channel.name:
+        unit = await resolve_battalion(interaction, battalion, office="mission_development")
+        if unit is None:
+            return
+        if interaction.channel.parent_id != int(unit.settings['mission_development']['forum_channel_id']) or not "Mission:" in interaction.channel.name:
             await interaction.response.send_message(embed=discord.Embed(description=f"Ensure that you run this command in a mission forum thread.", color=0xFF2B2B), ephemeral=True)
             return
 
@@ -230,7 +251,8 @@ class MisdevOffice(commands.Cog, name="misdev"):
 
 
     @app_commands.command(name="mission_played", description="Set a mission state to played and send out the feedback forms and polls to all members.", )
-    async def mission_played(self, interaction: discord.Interaction) -> None:
+    @app_commands.autocomplete(battalion=mission_battalions)
+    async def mission_played(self, interaction: discord.Interaction, battalion: str | None = None) -> None:
         context = await commands.Context.from_interaction(interaction)
         self.bot.logger.info(f"Mission played command executed by {interaction.user.id} in channel {interaction.channel.parent_id}.")
 
@@ -239,12 +261,18 @@ class MisdevOffice(commands.Cog, name="misdev"):
             await interaction.response.send_message(embed=await not_configured_embed(self), ephemeral=True)
             return
 
-        if interaction.channel.parent_id != int(self.bot.config['discord']['mission_development']['forum_channel_id']) or not "Mission:" in interaction.channel.name:
+        unit = await resolve_battalion(interaction, battalion, office="mission_development")
+        if unit is None:
+            return
+        if interaction.channel.parent_id != int(unit.settings['mission_development']['forum_channel_id']) or not "Mission:" in interaction.channel.name:
             await interaction.response.send_message(embed=discord.Embed(description=f"Ensure that you run this command in a mission forum thread.", color=0xFF2B2B), ephemeral=True)
             return
 
         # Ensure the user has the forum moderator role.
-        allowed_roles = [*self.bot.config['discord']['mission_development']['forum_moderators'], *self.bot.config['discord']['server_admin_office']['forum_moderators']]
+        allowed_roles = [
+            int(role) for office in ('mission_development', 'server_admin_office')
+            for role in unit.settings.get(office, {}).get('forum_moderators', [])
+        ]
         if not any(role.id in allowed_roles for role in interaction.user.roles):
             await interaction.response.send_message(embed=discord.Embed(description=f"Only misdev can run this command.", color=0xFF2B2B), ephemeral=True)
             return
@@ -253,14 +281,14 @@ class MisdevOffice(commands.Cog, name="misdev"):
         await interaction.response.defer()
 
         # Set the forum thread tags to be played.
-        await interaction.channel.add_tags(interaction.channel.parent.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['played'])))
-        await interaction.channel.add_tags(interaction.channel.parent.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['approved'])))
-        await interaction.channel.remove_tags(interaction.channel.parent.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['pending_review'])))
-        await interaction.channel.remove_tags(interaction.channel.parent.get_tag(int(self.bot.config['discord']['mission_development']['forum_tags']['scheduled'])))
+        await interaction.channel.add_tags(interaction.channel.parent.get_tag(int(unit.settings['mission_development']['forum_tags']['played'])))
+        await interaction.channel.add_tags(interaction.channel.parent.get_tag(int(unit.settings['mission_development']['forum_tags']['approved'])))
+        await interaction.channel.remove_tags(interaction.channel.parent.get_tag(int(unit.settings['mission_development']['forum_tags']['pending_review'])))
+        await interaction.channel.remove_tags(interaction.channel.parent.get_tag(int(unit.settings['mission_development']['forum_tags']['scheduled'])))
 
         member_roles = [
             discord.Object(id=int(role_id))
-            for role_id in self.bot.config['discord']['am2']['roles']['members']
+            for role_id in unit.settings['roles']['members']
         ]
         mentions = " ".join(f"<@&{role.id}>" for role in member_roles)
 

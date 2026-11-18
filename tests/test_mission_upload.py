@@ -203,10 +203,12 @@ class MissionUploadConfigTests(unittest.IsolatedAsyncioTestCase):
 class MissionUploadCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.bot = SimpleNamespace(
-            config={"discord": {
+            config={"arma_server_web_admin": {"am2": {}}, "discord": {
                 "guild_id": 1,
-                "mission_development": {"forum_moderators": [10]},
-                "server_admin_office": {"forum_moderators": [20]},
+                "am2": {
+                    "mission_development": {"forum_moderators": [10]},
+                    "server_admin_office": {"forum_moderators": [20]},
+                },
             }},
             logger=MagicMock(),
             arma_server_web_admin=SimpleNamespace(mission_upload=AsyncMock(
@@ -215,6 +217,7 @@ class MissionUploadCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         self.cog = MisdevOffice(self.bot)
         self.interaction = MagicMock()
+        self.interaction.client = self.bot
         self.interaction.guild.id = 1
         self.interaction.user = MagicMock(spec=discord.Member)
         self.interaction.user.id = 100
@@ -269,6 +272,7 @@ class MissionUploadCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def invoke_menu(self, attachments):
         source = SimpleNamespace(
+            channel=self.interaction.channel,
             attachments=attachments,
             jump_url="https://discord.com/channels/1/2/3",
         )

@@ -2,7 +2,7 @@
 Stage 1: Export played missions, poll ratings and feedback from the MisDev forum.
 
 Logs in with the bot TOKEN from the repo .env, reads every (active + archived) thread in
-discord.mission_development.forum_channel_id and writes:
+the selected battalion's mission_development.forum_channel_id and writes:
   output/missions_raw.json      - full data incl. feedback text (input for theme extraction)
   output/missions_ratings.csv   - ratings only, one row per mission
 
@@ -21,6 +21,9 @@ import discord
 from dotenv import load_dotenv
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, ROOT)
+from utils.battalions import select_battalion
+
 DEFAULT_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 CATEGORIES = ("concept", "zeus", "nco")
@@ -144,7 +147,12 @@ class Exporter(discord.Client):
         return result
 
     async def export(self):
-        md = self.config["discord"]["mission_development"]
+        unit = select_battalion(
+            self.config, None,
+            self.args.battalion or self.config["discord"].get("default_battalion"),
+            office="mission_development",
+        )
+        md = unit.settings["mission_development"]
         guild_id = int(self.config["discord"]["guild_id"])
         guild = self.get_guild(guild_id) or await self.fetch_guild(guild_id)
         forum = guild.get_channel(int(md["forum_channel_id"])) or await self.fetch_channel(int(md["forum_channel_id"]))
@@ -305,6 +313,7 @@ class Exporter(discord.Client):
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default=os.path.join(ROOT, "config.json"))
+    p.add_argument("--battalion", help="Battalion key/name; defaults to discord.default_battalion")
     p.add_argument("--out", default=DEFAULT_OUT)
     p.add_argument("--limit", type=int, default=0, help="Stop after N played missions (for testing)")
     p.add_argument("--since", type=lambda s: datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc),

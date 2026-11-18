@@ -10,7 +10,10 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-The script uses the bot `TOKEN` from the repo `.env` and the `discord.mission_development` section of `config.json`. The bot needs the **Message Content** privileged intent enabled in the Discord developer portal.
+The script uses the bot `TOKEN` from the repo `.env` and the selected battalion's
+`mission_development` section of `config.json`. Pass `--battalion <key>` or set
+`discord.default_battalion`. The bot needs the **Message Content** privileged
+intent enabled in the Discord developer portal.
 
 ## Stages
 

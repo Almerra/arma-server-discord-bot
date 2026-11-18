@@ -25,7 +25,7 @@ Member                          Instructor
 
 ## Setup
 
-Add to `config.json` under `discord`:
+Add to `config.json` under `discord.am2`:
 
 ```json
 "combat_training_centre": {
@@ -48,6 +48,8 @@ Add to `config.json` under `discord`:
 
 Every key has a default, so a missing block will not raise — but
 `queue_channel_id` must be set or requests have nowhere to go.
+Battalions without a `combat_training_centre` section are not registered.
+Set the battalion's `name` beside that section; put `site_url` inside CTC.
 
 Any `*_role_id` accepts a single id or a list, so several roles can share an
 ability:
@@ -64,8 +66,8 @@ ability:
 | `config_role_id` | `0` | Who may edit the catalogue. `0` falls back to the Manage Server permission. |
 | `assign_role_id` | `0` | Who may set who is working on a request. `0` falls back to the instructor roles. |
 | `member_role_id` | `0` | Who may raise a request with this unit. `0` means anyone. Staff can always request. |
-| `manager_ids` | `[]` | User ids who staff **every** battalion without holding its roles. Set once in the shared block. |
-| `site_url` | `""` | This battalion's website. Adds links to the catalogue, the panel and every ticket. Blank adds none. |
+| `manager_ids` | `[]` | User ids who staff this battalion without holding its roles. Repeat in each battalion they manage. |
+| `site_url` | `""` | This battalion's CTC website. Adds links to the catalogue, panel and every ticket. |
 | `panel_role_id` | `0` | Who may post the request panel. `0` falls back to the Manage Server permission. |
 | `taw_award_url` | `""` | Deep link on completed tickets. Omitted if blank. |
 | `create_threads` | `true` | `false` posts cards in the channel instead. |
@@ -118,22 +120,29 @@ The guild cannot tell them apart on its own — both battalions have the same
 `guild_id` — so every request, panel and interaction carries a **unit key**.
 
 ```json
-"combat_training_centre": {
-  "taw_award_url": "https://www.taw.net/",
-  "private_threads": true,
-  "primary_unit": "am2",
-  "units": {
-    "am2": {
-      "name": "2nd Battalion",
+"discord": {
+  "am2": {
+    "name": "2nd Battalion",
+    "combat_training_centre": {
+      "site_url": "https://am2.example.com",
+      "taw_award_url": "https://www.taw.net/",
+      "private_threads": true,
+      "manager_ids": [],
       "catalogue": "catalogue.json",
       "queue_channel_id": 1111111111111111111,
       "instructor_role_id": [1111111111111111111, 2222222222222222222],
       "assign_role_id": 2222222222222222222,
       "config_role_id": 2222222222222222222,
       "member_role_id": 3333333333333333333
-    },
-    "am1": {
-      "name": "1st Battalion",
+    }
+  },
+  "am1": {
+    "name": "1st Battalion",
+    "combat_training_centre": {
+      "site_url": "https://am1.example.com",
+      "taw_award_url": "https://www.taw.net/",
+      "private_threads": true,
+      "manager_ids": [],
       "catalogue": "am1.json",
       "queue_channel_id": 4444444444444444444,
       "instructor_role_id": [5555555555555555555],
@@ -143,9 +152,10 @@ The guild cannot tell them apart on its own — both battalions have the same
 }
 ```
 
-Settings resolve most-specific-first: **cog defaults → the shared block → the
-unit's own block**. So `taw_award_url` and `private_threads` above apply to
-both, while channels and roles stay per unit.
+Settings resolve as **cog defaults → the battalion's CTC settings**.
+There is no shared configuration block. Repeat options such as `manager_ids`
+or `private_threads` in each battalion that needs them. Only `name`
+comes from the parent battalion; `site_url` belongs inside CTC.
 
 `catalogue` is a filename beside the code in `ctc/`. Each unit needs its own,
 and `/badge config` only ever edits the one belonging to the unit the session
@@ -201,30 +211,32 @@ it.
 
 ### Upgrading a single-battalion setup
 
-Nothing to do. With no `units` block the whole config is read as one unit keyed
-`default`, so an existing `config.json` keeps working untouched — which matters,
-because that file lives on the host and is not deployed with the code.
+Put each unit's CTC settings under `discord.<unit>.combat_training_centre`.
+Move `name` onto the parent battalion; keep `site_url` inside CTC. If migrating an old shared
+CTC block with `units`, merge its common options into every unit first, letting
+the unit's own values win, then remove `units` and `primary_unit`.
+Preserve keys such as `am1` and `am2` so existing requests and panels resolve
+to the same battalion. An unmigrated nested block raises a configuration error.
 
 On first start the `unit` column is added and every existing row is filed under
-`primary_unit` (or the first unit listed). Panels pinned before the upgrade keep
+`discord.default_battalion` (or the first configured CTC battalion if unset). Panels pinned before the upgrade keep
 working too: their old `ctc:panel:open` id resolves to the primary unit.
 
-To split later, add the `units` block and set `primary_unit` to whichever key
-represents the battalion that was already running — that is where the history
-goes.
+To split later, add another battalion's `combat_training_centre` section.
+Keep `discord.default_battalion` set to the existing unit key so legacy history
+continues to resolve there. This default does not select destinations for other cogs.
 
 ### Division staff
 
-`manager_ids` names people who run the system rather than a battalion: they
-can claim, complete, award, assign, configure and post panels in **every**
-unit, without holding any unit's roles.
+`manager_ids` names people who can claim, complete, award, assign, configure
+and post panels in that battalion without holding its roles.
 
 ```json
 "manager_ids": [1111111111111111111]
 ```
 
-Set it in the shared block so it covers battalions added later. A bare id, a
-list, or pasted `<@id>` mentions all work.
+Set it in each battalion's `combat_training_centre` section that they manage.
+A bare id, a list, or pasted `<@id>` mentions all work.
 
 They deliberately stay out of routing. Holding no battalion roles means a
 loose `/badge request` asks which battalion rather than guessing, which is

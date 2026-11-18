@@ -513,15 +513,15 @@ def _() -> None:
     from cogs.ctc import CTC, DEFAULTS
 
     class Bot:
-        config = {"discord": {"combat_training_centre": {
+        config = {"discord": {"am2": {"combat_training_centre": {
             "instructor_role_id": [111, 222],
             "config_role_id": 333,
             "panel_role_id": [],
-        }}}
+        }}}}
 
     cog = CTC.__new__(CTC)
-    cog.units = Units(Bot.config["discord"]["combat_training_centre"], DEFAULTS)
-    unit = cog.units.require("default")
+    cog.units = Units(CTC.raw_config(Bot), DEFAULTS)
+    unit = cog.units.require("am2")
 
     assert cog.role_ids(unit, "instructor_role_id") == [111, 222], "a list of roles"
     assert cog.role_ids(unit, "config_role_id") == [333], "a bare id still works"
@@ -1740,8 +1740,7 @@ def _() -> None:
 
     src = (ROOT.parent / "cogs" / "ctc.py").read_text(encoding="utf-8")
     # Choices come from the live config, so adding a battalion is config-only.
-    assert "async def unit_autocomplete(" in src
-    assert "for unit in cog.units" in src
+    assert 'unit_autocomplete = battalion_autocomplete(office="combat_training_centre")' in src
     assert src.count("@app_commands.autocomplete(unit=unit_autocomplete)") == 6
 
 

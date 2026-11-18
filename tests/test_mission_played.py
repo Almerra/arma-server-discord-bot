@@ -12,20 +12,23 @@ class MissionPlayedTests(unittest.IsolatedAsyncioTestCase):
                 bot = SimpleNamespace(
                     config={"discord": {
                         "guild_id": 1,
-                        "mission_development": {
-                            "forum_channel_id": 2,
-                            "forum_moderators": [10],
-                            "forum_tags": {
-                                "played": 100, "approved": 101,
-                                "pending_review": 102, "scheduled": 103,
+                        "am2": {
+                            "mission_development": {
+                                "forum_channel_id": 2,
+                                "forum_moderators": [10],
+                                "forum_tags": {
+                                    "played": 100, "approved": 101,
+                                    "pending_review": 102, "scheduled": 103,
+                                },
                             },
+                            "server_admin_office": {"forum_moderators": [20]},
+                            "roles": {"members": role_ids},
                         },
-                        "server_admin_office": {"forum_moderators": [20]},
-                        "am2": {"roles": {"members": role_ids}},
                     }},
                     logger=MagicMock(),
                 )
                 interaction = MagicMock()
+                interaction.client = bot
                 interaction.guild.id = 1
                 interaction.user.id = 50
                 interaction.user.roles = [SimpleNamespace(id=10)]

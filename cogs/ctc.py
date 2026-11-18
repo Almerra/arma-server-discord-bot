@@ -27,7 +27,8 @@ from discord.ext import commands, tasks
 from ctc import CTCDatabaseManager, TransitionError, guest_of, instructors_of
 from ctc import catalogue as catalogue_module
 from ctc.config_views import ConfigRootView
-from ctc.units import Unit, Units
+from ctc.units import Unit, UnitError, Units
+from utils.battalions import battalions, battalion_autocomplete
 from ctc.views import (
     AmendView,
     AssignView,
@@ -190,20 +191,7 @@ def split_mentions(mentions: Sequence[str]) -> tuple[list[int], list[int]]:
     return users, roles
 
 
-async def unit_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    """Offer the configured battalions, from the live config rather than a
-    hard-coded list — adding a unit must not mean editing the commands."""
-    cog = interaction.client.get_cog("ctc")
-    if cog is None:  # pragma: no cover - only if the cog is unloaded
-        return []
-    needle = (current or "").lower()
-    return [
-        app_commands.Choice(name=unit.name, value=unit.key)
-        for unit in cog.units
-        if needle in unit.key.lower() or needle in unit.name.lower()
-    ][:25]
+unit_autocomplete = battalion_autocomplete(office="combat_training_centre")
 
 
 class CTC(commands.Cog, name="ctc"):
@@ -218,11 +206,28 @@ class CTC(commands.Cog, name="ctc"):
 
     @staticmethod
     def raw_config(bot) -> dict[str, Any]:
-        return (
-            bot.config.get("discord", {}).get("combat_training_centre", {})
-            if hasattr(bot, "config")
-            else {}
-        )
+        discord_config = getattr(bot, "config", {}).get("discord", {})
+        units = {}
+        for unit in battalions(getattr(bot, "config", {}), office="combat_training_centre"):
+            key, battalion = unit.key, unit.settings
+            settings = battalion["combat_training_centre"]
+            if not isinstance(settings, dict):
+                raise UnitError(f"discord.{key}.combat_training_centre must be an object")
+            if "units" in settings or "primary_unit" in settings:
+                raise UnitError(
+                    f"Move discord.{key}.combat_training_centre.units into each battalion's "
+                    "combat_training_centre section and remove primary_unit"
+                )
+            units[key] = {
+                **settings,
+                "name": battalion.get("name", key.upper()),
+            }
+        if not units:
+            return {}
+        primary = discord_config.get("default_battalion")
+        if primary and primary not in units:
+            raise UnitError("discord.default_battalion must have combat_training_centre settings")
+        return {"units": units, "primary_unit": primary or next(iter(units))}
 
     def unit_of(self, row: Any) -> Unit:
         """The battalion a request belongs to.

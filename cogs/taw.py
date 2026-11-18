@@ -7,35 +7,12 @@ from bs4 import BeautifulSoup
 import asyncpraw
 from datetime import datetime, timedelta, timezone
 import pytz
+from utils.battalions import battalion_autocomplete, resolve_battalion
 
 
 class TAW(commands.Cog, name="taw"):
     def __init__(self, bot) -> None:
         self.bot = bot
-
-    @commands.hybrid_command(
-        name="taw_link", 
-        description="Link your TAW account to your discord.",
-    )
-    async def taw_link(self, context: Context, username: str) -> None:
-
-        embed = discord.Embed(title="TAW Account Linking", description=f"You currently cannot link your TAW account to your discord, this is being developed and will be available soon.", color=0xFF2B2B)
-        await context.send(embed=embed, ephemeral=True)
-        return
-
-        
-        account_linked = False
-        if account_linked:
-            linked_username = "TESTCHANGELATER"
-            embed = discord.Embed(title="TAW Account Linking", description=f"You have already linked your account to {linked_username}, you can unlink your account using `/taw_unlink`. If you have any issues please contact the Server Administrator.", color=0xBEBEFE)
-        else:
-            embed = discord.Embed(title="TAW Account Linking", description=f"In order to link your TAW account `{username}` to your this discord, you need to add the following authentication key to your taw biography.\n\nThis has been private messaged to you with steps on how to do it.", color=0xBEBEFE)
-
-        # bio = await scrape_bio_text(username)
-        #print(bio)
-        
-        await context.send(embed=embed, ephemeral=True)
-
 
     @commands.hybrid_command(
         name="donate",
@@ -63,9 +40,8 @@ class TAW(commands.Cog, name="taw"):
         description="Get information related to a specific battalion.",
     )
     @app_commands.describe(post="Whether to post the message in the channel for everyone to see, or just send it as an ephemeral message to the user.")
-    @app_commands.choices(battalion=[discord.app_commands.Choice(name="1st Battalion (Reforger EU)", value="am1"), discord.app_commands.Choice(name="2nd Battalion (Arma 3 EU)", value="am2"),
-                                     discord.app_commands.Choice(name="3rd Battalion (Arma 3 NA)", value="am3")])
-    async def donate(self, context: Context, battalion: str = "am2", post: bool = False) -> None:
+    @app_commands.autocomplete(battalion=battalion_autocomplete(feature="info"))
+    async def info(self, context: Context, battalion: str | None = None, post: bool = False) -> None:
         """
         Get a link to all the division's donation pages.
 
@@ -74,37 +50,26 @@ class TAW(commands.Cog, name="taw"):
         :param post: Whether to post the message in the channel for everyone to see, or just send it as an ephemeral message to the user.
         """
 
-        if battalion == "am2":
-            am2_non_cdlc_owner_link_direct = "https://drive.google.com/uc?export=download&id=15JpbnAF-R0yej2MILvozztJW76kRz77V"
-            am2_cdlc_owner_link_direct = "https://drive.google.com/uc?export=download&id=1ZlPBnLEzuc42KZoEJwX83yQeekrRvWpJ"
-
-            events = discord.Embed(title="Events", description="", color=0xBEBEFE)
-            events.add_field(name="Operation Times", value=f"- Thursday @ {await get_next_event_timestamp(4,19,30, timeonly=True)}\n- Sunday @ {await get_next_event_timestamp(7,19,30, timeonly=True)}", inline=False)
-
-            mods = discord.Embed(title="Mods", description="In order to join our events, you need to have downloaded the latest modpacks for that specific events. By default all our events will be using the `am2` .html presets which can be downloaded with the links below.", color=0xBEBEFE)
-            mods.add_field(name="Required Mods", value=f"""You can download the our latest modpack here, selecting the Non-CDLC Owner preset if you do not own Western Sahara CDLC:
-- [AM2 CDLC Owner Preset]({am2_cdlc_owner_link_direct})
-- [AM2 Non-CDLC Owner Preset]({am2_non_cdlc_owner_link_direct})
-Once downloaded, import it into your launcher and subscribe to all the dependencies.""", inline=False)
-            mods.add_field(name="Clientside Mods", value=f"""You can also download additional clientside mods from our [Clientside Mods List](https://discord.com/channels/1001559795310010539/1322642580827148370), each of these mods can be loaded alongside the required mod presets.""", inline=False)
-            mods.add_field(name="Common In-game Issues", value=f"""If you have any issues with joining the server, first check out this forum thread: [Common In-game Issues](https://discord.com/channels/1001559795310010539/1342204767568400454)""", inline=False)
-
-            servers = discord.Embed(title="Servers", description="If you have installed and loaded our mods, you should be able to see all the servers directly from the main menu. There is no need to connect via direct connect anymore.", color=0xBEBEFE)
-
-            documents = discord.Embed(title="Documentation", description="", color=0xBEBEFE)
-            documents.add_field(name="Standard Operating Procedures", value="https://docs.google.com/document/d/1SF_UiHsLKDSrglceA-tWz4vIFMJdua_JsawbxBcQflk/edit?tab=t.pe95mvkty91z#heading=h.e8qc4qnlz1f3", inline=False)
-
-            if post:
-                await context.channel.send(content="# 2nd Battalion | Arma 3 | EU (AM2)", embeds=[events, mods, servers, documents])
-                await context.send(content=f"Posted message to channel for everyone to see..", ephemeral=True)
-            else:
-                await context.send(content="# 2nd Battalion | Arma 3 | EU (AM2)", embeds=[events, mods, servers, documents], ephemeral=True)
+        unit = await resolve_battalion(context, battalion, feature="info")
+        if unit is None:
+            return
+        settings = unit.settings["info"]
+        embeds = [discord.Embed.from_dict(data) for data in settings["embeds"]]
+        if unit.settings.get("operations"):
+            events = discord.Embed(title="Events", color=0xBEBEFE)
+            events.add_field(name="Operation Times", value=await operation_times(unit.settings["operations"], timeonly=True))
+            embeds.insert(0, events)
+        content = settings.get("heading", unit.name)
+        if post:
+            await context.channel.send(content=content, embeds=embeds)
+            await context.send("Posted message to channel for everyone to see.", ephemeral=True)
+        else:
+            await context.send(content=content, embeds=embeds, ephemeral=True)
 
 
     @commands.hybrid_command(name="signup", description="Get information on how to sign up to the unit.")
     @app_commands.describe(post="Whether to post the message in the channel for everyone to see, or just send it as an ephemeral message to the user.")
-    @app_commands.choices(battalion=[discord.app_commands.Choice(name="1st Battalion (Reforger EU)", value="am1"), discord.app_commands.Choice(name="2nd Battalion (Arma 3 EU)", value="am2"),
-                                     discord.app_commands.Choice(name="3rd Battalion (Arma 3 NA)", value="am3")])
+    @app_commands.autocomplete(battalion=battalion_autocomplete(feature="operations"))
     async def signup(self, context: Context, battalion: str = None, post: bool = False) -> None:
         """
         Get information on how to sign up to the unit.
@@ -120,8 +85,10 @@ Once downloaded, import it into your launcher and subscribe to all the dependenc
         color=0xBEBEFE)
 
         operations = discord.Embed(title="""Operation Times""", description="""Check out the operations schedule for each battalion below, its recommended to be there atleast 15 minutes before:""", color=0xBEBEFE)
-        operations.add_field(name="1st Battalion | Arma Reforger | EU (AM1)", value=f"- Tuesday @ {await get_next_event_timestamp(2,19,30)}\n- Thursday @ {await get_next_event_timestamp(4,19,30)}\n- Sunday (Optional) @ {await get_next_event_timestamp(7,19,30)}", inline=False)
-        operations.add_field(name="2nd Battalion | Arma 3 | EU (AM2)", value=f"- Thursday @ {await get_next_event_timestamp(4,19,30)}\n- Sunday @ {await get_next_event_timestamp(7,19,30)}", inline=False)
+        unit = await resolve_battalion(context, battalion, feature="operations")
+        if unit is None:
+            return
+        operations.add_field(name=unit.name, value=await operation_times(unit.settings["operations"]), inline=False)
 
         if post:
             await context.channel.send(embeds=[taw_join_info, operations])
@@ -131,28 +98,24 @@ Once downloaded, import it into your launcher and subscribe to all the dependenc
 
 
     @commands.hybrid_command(name="form", description="Get a link to the battalion-wide form and responses.", )
-    async def form(self, context: Context) -> None:
+    @app_commands.autocomplete(battalion=battalion_autocomplete(feature="form"))
+    async def form(self, context: Context, battalion: str | None = None) -> None:
         """
         Get a link to the battalion-wide form and responses.
 
         :param context: The hybrid command context.
         """
+        unit = await resolve_battalion(context, battalion, feature="form")
+        if unit is None:
+            return
+        settings = unit.settings["form"]
         buttons = discord.ui.View()
-        buttons.add_item(discord.ui.Button(label="Battalion Form", style=discord.ButtonStyle.link, url='https://docs.google.com/forms/d/e/1FAIpQLSdykee7E-75ldEvuQ4SYBT1H1dG2v4sFCG5j85dDJYcPVDgUA/viewform'))
-        buttons.add_item(discord.ui.Button(label="Responses", style=discord.ButtonStyle.link, url='https://docs.google.com/spreadsheets/d/1tkhHPKfpW2JxpQZq4vGv0gbVgtAIVgTiJkBoMc33d9E/edit?gid=1029717932#gid=1029717932'))
-
-        embed = discord.Embed(title="""Battalion Form""", description="""Check out the form below for any suggestions, badge requests and feedback. The following options are available:""", color=0xBEBEFE)
-        embed.add_field(name=f"""Battalion Suggestions""", value=f"""Send in your complaints, ideas and improvements here for BATCOM to review and address.""", inline=True)
-        embed.add_field(name=f"""Newsletter""", value=f"""Got any ideas/submissions for the newsletter? Send in your snazzy recipes or posts here.""", inline=True)
-        embed.add_field(name=f"""Monthly Meeting""", value=f"""Have any topics you want to discuss wider within the battalion? Post your topics here to be picked up at the montly battalion-wide meetings.""", inline=True)
-        embed.add_field(name=f"""Mission Development (MISDEV)""", value=f"""Send in your feedback and ideas for missions so we can continue to improve the missions we play as a battalion.""", inline=True)
-        embed.add_field(name=f"""Combat Training Centre (CTC)""", value=f"""Request for specific badges and training so that you are ready on the field.""", inline=True)
-        embed.add_field(name=f"""Server Admin Office (SAO)""", value=f"""Send in your mod change requests and or any bug reports here so we can continue to improve the server.""", inline=True)
-        embed.add_field(name=f"""Position Interest""", value=f"""Are you interested in any positions within the unit? Register your interest here even if the position is filled.""", inline=True)
-        embed.add_field(name=f"""Arsenal Requests""", value=f"""Request changes to the in-game arsenal here if there's anything you feel is missing or should be removed.""", inline=True)
-        embed.add_field(name=f"", value=f"", inline=True)
-
-        await context.send(embed=embed, view=buttons, ephemeral=True)
+        for button in settings["buttons"]:
+            buttons.add_item(discord.ui.Button(label=button["label"], url=button["url"]))
+        await context.send(
+            embeds=[discord.Embed.from_dict(data) for data in settings["embeds"]],
+            view=buttons, ephemeral=True,
+        )
 
 
     @commands.hybrid_command(name="social", description="Get a link to all the battalion's social pages", )
@@ -186,6 +149,16 @@ Once downloaded, import it into your launcher and subscribe to all the dependenc
 
 async def setup(bot) -> None:
     await bot.add_cog(TAW(bot))
+
+
+async def operation_times(events: list[dict], *, timeonly: bool = False) -> str:
+    lines = []
+    for event in events:
+        timestamp = await get_next_event_timestamp(
+            event["weekday"], event["hour"], event["minute"], timeonly=timeonly
+        )
+        lines.append(f"- {event['label']} @ {timestamp}")
+    return "\n".join(lines)
 
 
 async def get_next_event_timestamp(day: int = 4, hour: int = 19, minute: int = 0, timeonly: bool = False) -> str:
@@ -257,4 +230,3 @@ async def scrape_bio_text(taw_username):
             # Return the text within the <code> tag
             await session.close()
             return code_tag.get_text(strip=True)
-
