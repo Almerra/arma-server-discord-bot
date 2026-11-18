@@ -16,7 +16,7 @@ The cogs use [shared battalion utilities](utils/battalions.py) to discover
 configured battalions and offer their names as autocomplete choices. A battalion
 is a `discord` object with a `name` or office section; keys are not hard-coded.
 Commands offer only battalions configured for their office/panel/content.
-An explicit `battalion` option (CTC: `unit`, server commands: `server_type`)
+An explicit `battalion` option, consistently named across the cogs,
 selects the destination. Otherwise the configured office/forum/queue identifies
 the battalion, or the sole eligible battalion is used. Ambiguous choices ask
 the user to select instead of silently choosing a default. Context-menu uploads
@@ -34,6 +34,12 @@ Discord embed dictionaries (`embeds`) and, for forms, `buttons` (`label`, `url`)
 list (`label`, ISO `weekday` 1–7, `hour`, `minute`, Europe/London time).
 The division-wide `/donate` and social commands remain division-wide. Existing
 TAW content has been moved into the local config, including modpack links.
+
+After changing command options, restart/reload the bot and run the owner's
+`sync guild` command for guild-scoped commands or `sync global` for global
+commands, using the configured prefix. If guild copies were previously synced,
+sync that guild too: older guild commands can shadow updated global commands.
+Restarting alone does not publish command schema changes to Discord.
 Battalion `name` sits beside its office sections. CTC options,
 including `site_url`, `catalogue` and `manager_ids`, belong inside each battalion's CTC
 section; there is no shared CTC block or nested `units` block. AM1 and AM2's

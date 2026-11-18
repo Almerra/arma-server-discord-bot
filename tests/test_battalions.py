@@ -212,7 +212,7 @@ class BattalionCommandTests(unittest.IsolatedAsyncioTestCase):
         target.guild.id = 1
         target.author.id = 50
         target.send = AsyncMock()
-        await ServerAdminOffice.server_start.callback(cog, target, "test-server", server_type="bravo")
+        await ServerAdminOffice.server_start.callback(cog, target, "test-server", battalion="bravo")
         self.assertEqual(self.bot.arma_server_web_admin.server_start.call_args.args[2], "bravo")
         view = StartStopButtonSelection(cog, target, ["server-a"], "bravo")
         other = StartStopButtonSelection(cog, target, ["server-b"], "alpha")
@@ -247,4 +247,42 @@ class BattalionCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(bot.tree.get_command("donate"))
             self.assertIsNotNone(bot.tree.get_command("info"))
             self.assertTrue(bot.tree.get_command("mission_upload").get_parameter("battalion").autocomplete)
-            self.assertTrue(bot.tree.get_command("server_start").get_parameter("server_type").autocomplete)
+            self.assertTrue(bot.tree.get_command("server_start").get_parameter("battalion").autocomplete)
+
+    async def test_dispatcher_returns_choices_for_every_battalion_option(self):
+        async with commands.Bot(command_prefix="!", intents=discord.Intents.none()) as bot:
+            bot.config = config()
+            for cog in (MisdevOffice(bot), ServerAdminOffice(bot), TAW(bot)):
+                await bot.add_cog(cog)
+            ctc = CTC(bot)
+            checked = 0
+            for command in [*bot.tree.walk_commands(), *ctc.badge.walk_commands()]:
+                if not isinstance(command, discord.app_commands.Command):
+                    continue
+                with self.subTest(command=command.qualified_name):
+                    names = [param.name for param in command.parameters]
+                    self.assertNotIn("unit", names)
+                    self.assertNotIn("server_type", names)
+                    parameter = command.get_parameter("battalion")
+                    if parameter is None:
+                        continue
+                    self.assertTrue(parameter.autocomplete)
+                    self.assertFalse(parameter.required)
+                    target = interaction(bot)
+                    target.response.is_done.return_value = False
+                    target.response.autocomplete = AsyncMock()
+                    await command._invoke_autocomplete(
+                        target, "battalion", SimpleNamespace(battalion="")
+                    )
+                    choices = target.response.autocomplete.call_args.args[0]
+                    self.assertTrue(choices)
+                    self.assertIn("alpha", [choice.value for choice in choices])
+                    checked += 1
+            self.assertGreaterEqual(checked, 19)
+
+    async def test_ctc_battalion_keyword_reaches_existing_resolution(self):
+        cog = CTC(self.bot)
+        target = interaction(self.bot)
+        with patch.object(cog, "resolve_unit", new_callable=AsyncMock, return_value=None) as resolve:
+            await cog.badge_catalogue.callback(cog, target, battalion="alpha")
+        resolve.assert_awaited_once_with(target, "alpha")

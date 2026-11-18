@@ -187,7 +187,7 @@ custom_id, so a panel can only ever open its own battalion's badges.
 
 ### Picking a battalion by hand
 
-Every command except `/badge amend` takes an optional `unit` option, offered by
+Every command except `/badge amend` takes an optional `battalion` option, offered by
 autocomplete from the live config — adding a battalion needs no code change.
 An explicit choice beats channel, thread and roles.
 
@@ -240,7 +240,7 @@ A bare id, a list, or pasted `<@id>` mentions all work.
 
 They deliberately stay out of routing. Holding no battalion roles means a
 loose `/badge request` asks which battalion rather than guessing, which is
-right: a manager belongs to none of them. Use the `unit` option or run the
+right: a manager belongs to none of them. Use the `battalion` option or run the
 command in that battalion's channel.
 
 ### Links to the website

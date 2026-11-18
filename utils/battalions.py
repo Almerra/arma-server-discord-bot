@@ -100,7 +100,7 @@ def select_battalion(
         raise BattalionSelectionError("No battalions are configured for this command.")
     options = ", ".join(f"{u.name} (`{u.key}`)" for u in eligible)
     raise BattalionSelectionError(
-        f"Please select a battalion using the command's battalion/unit/server_type option: {options}. "
+        f"Please select a battalion using the command's `battalion` option: {options}. "
         "For message actions, use the battalion's configured forum or use the slash command."
     )
 

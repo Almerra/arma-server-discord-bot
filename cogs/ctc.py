@@ -191,7 +191,7 @@ def split_mentions(mentions: Sequence[str]) -> tuple[list[int], list[int]]:
     return users, roles
 
 
-unit_autocomplete = battalion_autocomplete(office="combat_training_centre")
+ctc_battalions = battalion_autocomplete(office="combat_training_centre")
 
 
 class CTC(commands.Cog, name="ctc"):
@@ -487,7 +487,7 @@ class CTC(commands.Cog, name="ctc"):
 
         if not quiet:
             await interaction.response.send_message(
-                "I cannot tell which battalion this is for. Add the `unit` option, "
+                "I cannot tell which battalion this is for. Add the `battalion` option, "
                 "run it in that battalion's badge channel, or use its request panel.",
                 ephemeral=True,
             )
@@ -709,14 +709,14 @@ class CTC(commands.Cog, name="ctc"):
     # ------------------------------------------------------------ commands
 
     @badge.command(name="request", description="Request one or more badges")
-    @app_commands.describe(unit="Which battalion — only needed if it cannot be worked out")
-    @app_commands.autocomplete(unit=unit_autocomplete)
+    @app_commands.describe(battalion="Which battalion — only needed if it cannot be worked out")
+    @app_commands.autocomplete(battalion=ctc_battalions)
     async def badge_request(
-        self, interaction: discord.Interaction, unit: str | None = None
+        self, interaction: discord.Interaction, battalion: str | None = None
     ) -> None:
-        chosen = await self.resolve_unit(interaction, unit, quiet=bool(not unit))
+        chosen = await self.resolve_unit(interaction, battalion, quiet=bool(not battalion))
         if chosen is None:
-            if unit:
+            if battalion:
                 return  # resolve_unit already said the name was wrong
             # Nothing could work it out, so ask rather than refuse: one click
             # and they are where they were trying to get to.
@@ -745,12 +745,12 @@ class CTC(commands.Cog, name="ctc"):
             await interaction.response.send_message(view.content(), view=view, ephemeral=True)
 
     @badge.command(name="catalogue", description="List every badge and its levels")
-    @app_commands.describe(unit="Which battalion — only needed if it cannot be worked out")
-    @app_commands.autocomplete(unit=unit_autocomplete)
+    @app_commands.describe(battalion="Which battalion — only needed if it cannot be worked out")
+    @app_commands.autocomplete(battalion=ctc_battalions)
     async def badge_catalogue(
-        self, interaction: discord.Interaction, unit: str | None = None
+        self, interaction: discord.Interaction, battalion: str | None = None
     ) -> None:
-        unit = await self.resolve_unit(interaction, unit)
+        unit = await self.resolve_unit(interaction, battalion)
         if unit is None:
             return
         await interaction.response.send_message(
@@ -766,17 +766,17 @@ class CTC(commands.Cog, name="ctc"):
     @app_commands.describe(
         mine="Requests you have claimed",
         open="Requests nobody has claimed yet",
-        unit="Which battalion — only needed if it cannot be worked out",
+        battalion="Which battalion — only needed if it cannot be worked out",
     )
-    @app_commands.autocomplete(unit=unit_autocomplete)
+    @app_commands.autocomplete(battalion=ctc_battalions)
     async def badge_queue(
         self,
         interaction: discord.Interaction,
         mine: bool = False,
         open: bool = False,
-        unit: str | None = None,
+        battalion: str | None = None,
     ) -> None:
-        unit = await self.resolve_unit(interaction, unit)
+        unit = await self.resolve_unit(interaction, battalion)
         if unit is None:
             return
         if not self.is_instructor(unit, interaction.user):
@@ -858,12 +858,12 @@ class CTC(commands.Cog, name="ctc"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @badge.command(name="stats", description="Pipeline stats and instructor load")
-    @app_commands.describe(unit="Which battalion — only needed if it cannot be worked out")
-    @app_commands.autocomplete(unit=unit_autocomplete)
+    @app_commands.describe(battalion="Which battalion — only needed if it cannot be worked out")
+    @app_commands.autocomplete(battalion=ctc_battalions)
     async def badge_stats(
-        self, interaction: discord.Interaction, unit: str | None = None
+        self, interaction: discord.Interaction, battalion: str | None = None
     ) -> None:
-        unit = await self.resolve_unit(interaction, unit)
+        unit = await self.resolve_unit(interaction, battalion)
         if unit is None:
             return
         if not self.is_instructor(unit, interaction.user):
@@ -961,12 +961,12 @@ class CTC(commands.Cog, name="ctc"):
         await interaction.response.send_message(view.content(), view=view, ephemeral=True)
 
     @badge.command(name="config", description="Add, edit or retire badges")
-    @app_commands.describe(unit="Which battalion — only needed if it cannot be worked out")
-    @app_commands.autocomplete(unit=unit_autocomplete)
+    @app_commands.describe(battalion="Which battalion — only needed if it cannot be worked out")
+    @app_commands.autocomplete(battalion=ctc_battalions)
     async def badge_config(
-        self, interaction: discord.Interaction, unit: str | None = None
+        self, interaction: discord.Interaction, battalion: str | None = None
     ) -> None:
-        unit = await self.resolve_unit(interaction, unit)
+        unit = await self.resolve_unit(interaction, battalion)
         if unit is None:
             return
         if not self.can_configure(unit, interaction.user):
@@ -1039,17 +1039,17 @@ class CTC(commands.Cog, name="ctc"):
     @app_commands.describe(
         catalogue="Include the full badge list above the button",
         message_id="Update an existing panel instead of posting a new one",
-        unit="Which battalion this panel is for",
+        battalion="Which battalion this panel is for",
     )
-    @app_commands.autocomplete(unit=unit_autocomplete)
+    @app_commands.autocomplete(battalion=ctc_battalions)
     async def badge_panel(
         self,
         interaction: discord.Interaction,
         catalogue: bool = True,
         message_id: str | None = None,
-        unit: str | None = None,
+        battalion: str | None = None,
     ) -> None:
-        unit = await self.resolve_unit(interaction, unit)
+        unit = await self.resolve_unit(interaction, battalion)
         if unit is None:
             return
         if not self.can_post_panel(unit, interaction.user):

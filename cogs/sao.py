@@ -241,25 +241,25 @@ class ServerAdminOffice(commands.Cog, name="server"):
         interaction = bug_report_modal.interaction
 
     param_server_id = "The 'nickname' or 'id' of the server in the web panel."
-    param_server_type = "The battalion's configured server panel."
+    param_battalion = "The battalion's configured server panel."
 
     @commands.hybrid_command(name="server_start", description="Start a specific server using the server id reference.", )
-    @app_commands.autocomplete(server_type=panel_battalions)
-    @app_commands.describe(server_id=param_server_id, server_type=param_server_type)
-    async def server_start(self, context: Context, server_id: str, server_type: str | None = None) -> None:
+    @app_commands.autocomplete(battalion=panel_battalions)
+    @app_commands.describe(server_id=param_server_id, battalion=param_battalion)
+    async def server_start(self, context: Context, server_id: str, battalion: str | None = None) -> None:
         """
         Start a specific server using the server id reference.
 
         :param context: The hybrid command context.
         :param server_id: The server ID which should be started.
-        :param server_type: The server address which should be referenced.
+        :param battalion: The server address which should be referenced.
         """
-        unit = await resolve_battalion(context, server_type, panel=True)
+        unit = await resolve_battalion(context, battalion, panel=True)
         if unit is None:
             return
-        server_type = unit.key
+        battalion = unit.key
 
-        response = await self.bot.arma_server_web_admin.server_start(context.author.id, context.guild.id, server_type, server_id)
+        response = await self.bot.arma_server_web_admin.server_start(context.author.id, context.guild.id, battalion, server_id)
         if response.status == 200:
             embed = discord.Embed(title="Server Started", description=f"The server (`{server_id}`) has been started.", color=0xBEBEFE)
             embed.set_footer(text=f"{response.url}")
@@ -278,21 +278,21 @@ class ServerAdminOffice(commands.Cog, name="server"):
             await context.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="server_stop", description=" Stop a specific server using the server id reference.", )
-    @app_commands.autocomplete(server_type=panel_battalions)
-    @app_commands.describe(server_id=param_server_id, server_type=param_server_type)
-    async def server_stop(self, context: Context, server_id: str, server_type: str | None = None) -> None:
+    @app_commands.autocomplete(battalion=panel_battalions)
+    @app_commands.describe(server_id=param_server_id, battalion=param_battalion)
+    async def server_stop(self, context: Context, server_id: str, battalion: str | None = None) -> None:
         """
         Stop a specific server using the server id reference.
 
         :param context: The hybrid command context.
         :param server_id: The server which should be started.
         """
-        unit = await resolve_battalion(context, server_type, panel=True)
+        unit = await resolve_battalion(context, battalion, panel=True)
         if unit is None:
             return
-        server_type = unit.key
+        battalion = unit.key
 
-        response = await self.bot.arma_server_web_admin.server_stop(context.author.id, context.guild.id, server_type, server_id)
+        response = await self.bot.arma_server_web_admin.server_stop(context.author.id, context.guild.id, battalion, server_id)
         if response.status == 200:
             embed = discord.Embed(title="Server Stopped", description=f"The server (`{server_id}`) has been stopped.", color=0xBEBEFE)
             embed.set_footer(text=f"{response.url}")
@@ -311,20 +311,20 @@ class ServerAdminOffice(commands.Cog, name="server"):
             await context.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="server_list", description="List the available server_ids on the web panel.", )
-    @app_commands.autocomplete(server_type=panel_battalions)
-    @app_commands.describe(server_type=param_server_type)
-    async def server_list(self, context: Context, server_type: str | None = None) -> None:
+    @app_commands.autocomplete(battalion=panel_battalions)
+    @app_commands.describe(battalion=param_battalion)
+    async def server_list(self, context: Context, battalion: str | None = None) -> None:
         """
         List the available server IDs to be used in other commands.
 
         :param context: The hybrid command context.
         """
-        unit = await resolve_battalion(context, server_type, panel=True)
+        unit = await resolve_battalion(context, battalion, panel=True)
         if unit is None:
             return
-        server_type = unit.key
+        battalion = unit.key
 
-        response = await self.bot.arma_server_web_admin.get_server_config(context.author.id, context.guild.id, server_type)
+        response = await self.bot.arma_server_web_admin.get_server_config(context.author.id, context.guild.id, battalion)
         if response.status == 200 and response.json_content:
             server_list = []
             server_ids = ""
@@ -339,7 +339,7 @@ class ServerAdminOffice(commands.Cog, name="server"):
             embed.add_field(name=f"ID", value=server_ids, inline=True)
             embed.add_field(name=f"Name", value=server_names, inline=True)
             embed.add_field(name=f"Port", value=server_ports, inline=True)
-            await context.send(embed=embed, ephemeral=True, view=StartStopButtonSelection(self, message_context=context, server_type=server_type, server_list=server_list))
+            await context.send(embed=embed, ephemeral=True, view=StartStopButtonSelection(self, message_context=context, server_type=battalion, server_list=server_list))
         elif response.status == 401:
             embed = await unauthorised_embed(self)
             embed.set_footer(text=f"{response.url}")
@@ -351,27 +351,27 @@ class ServerAdminOffice(commands.Cog, name="server"):
 
 
     @commands.hybrid_command(name="server_login", description="Setup your web panel information in discord so you can use the server commands.", )
-    @app_commands.autocomplete(server_type=panel_battalions)
-    @app_commands.describe(server_type=param_server_type)
-    async def server_login(self, context: Context, username: str, password: str, server_type: str | None = None) -> None:
+    @app_commands.autocomplete(battalion=panel_battalions)
+    @app_commands.describe(battalion=param_battalion)
+    async def server_login(self, context: Context, username: str, password: str, battalion: str | None = None) -> None:
         """
         Setup your web panel information in discord so you can use the discord commands to interact with the servers directly.
 
         :param context: The hybrid command context.
         """
-        unit = await resolve_battalion(context, server_type, panel=True)
+        unit = await resolve_battalion(context, battalion, panel=True)
         if unit is None:
             return
-        server_type = unit.key
+        battalion = unit.key
 
         # member = context.guild.get_member(user.id) or await context.guild.fetch_member(
         #     user.id
         # )
         user_id = context.author.id
         guild_id = context.guild.id
-        response = await self.bot.database.set_server_authentication(user_id, guild_id, server_type, username, password)
+        response = await self.bot.database.set_server_authentication(user_id, guild_id, battalion, username, password)
         if response:
-            embed = discord.Embed(description=f"Your webpanel authentication has been setup with {user_id}, {guild_id}, {server_type}, {username}, {password}.", color=0xBEBEFE)
+            embed = discord.Embed(description=f"Your webpanel authentication has been setup with {user_id}, {guild_id}, {battalion}, {username}, {password}.", color=0xBEBEFE)
         else:
             embed = discord.Embed(title=f"Error", description=f"""Please try again or contact the server administrator.""", color=0xE02B2B)
         await context.send(embed=embed, ephemeral=True)

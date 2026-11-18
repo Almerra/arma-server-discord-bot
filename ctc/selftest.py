@@ -1723,7 +1723,7 @@ def _() -> None:
 
 
 
-@check("every command takes a unit option, and it is autocompleted")
+@check("every command takes a battalion option, and it is autocompleted")
 def _() -> None:
     from cogs.ctc import CTC
 
@@ -1731,17 +1731,17 @@ def _() -> None:
         names = [p.name for p in command.parameters]
         if command.name == "amend":
             # Thread-scoped: the request in the thread already names its unit.
-            assert "unit" not in names, "amend needs no unit option"
+            assert "battalion" not in names, "amend needs no battalion option"
             continue
-        assert "unit" in names, f"/badge {command.name} is missing the unit option"
-        assert not command.parameters[names.index("unit")].required, (
-            f"/badge {command.name}: unit must stay optional"
+        assert "battalion" in names, f"/badge {command.name} is missing the battalion option"
+        assert not command.parameters[names.index("battalion")].required, (
+            f"/badge {command.name}: battalion must stay optional"
         )
 
     src = (ROOT.parent / "cogs" / "ctc.py").read_text(encoding="utf-8")
     # Choices come from the live config, so adding a battalion is config-only.
-    assert 'unit_autocomplete = battalion_autocomplete(office="combat_training_centre")' in src
-    assert src.count("@app_commands.autocomplete(unit=unit_autocomplete)") == 6
+    assert 'ctc_battalions = battalion_autocomplete(office="combat_training_centre")' in src
+    assert src.count("@app_commands.autocomplete(battalion=ctc_battalions)") == 6
 
 
 @check("an unresolvable request asks which battalion instead of refusing")
