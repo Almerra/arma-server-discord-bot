@@ -396,6 +396,48 @@ On a private thread, give the Guest TI role Manage Threads on the queue channel
 (as instructors have) or they will not see cards to claim. Seating someone
 through **Assign…** adds them to the thread either way.
 
+## Picking a time
+
+**Pick a time** on a claimed card posts a shared message in the request's
+thread and opens the instructor's hour grid. Everything after that happens from
+the shared message:
+
+- **Mark my times** opens a private grid: the 24 hours of one day, labelled on
+  your own clock, with a button to step through the next 7 days. Tap an hour to
+  mark it, tap again to clear it. Each tap saves.
+- The instructor can mark any hour; the trainee's hours show in blue. The
+  trainee can only pick hours an instructor is around (blue); the rest are
+  greyed out. Hours both have marked get a tick. A TI's and a Guest TI's hours
+  are pooled.
+- The shared message lists who is around, what the trainee can do, and when
+  both are free. Every time on it is a Discord timestamp, so each reader sees
+  their own local time.
+- Once someone stops tapping for a minute, the other side is pinged once: the
+  trainee when the instructor has marked hours, the instructor when the trainee
+  has picked theirs.
+- **None of these work** (trainee) pings the instructor to add more hours.
+- **Book a time** (instructor) offers start times where both are free, in the
+  instructor's own time. The booked time goes on the card and the shared
+  message, and everyone on the request is pinged about an hour before.
+- **Set a date** (instructor), on the card and on the shared message, books a
+  time agreed without the grid: pick the day (next 25 days), hour and minute on
+  your own clock. It books exactly like **Book a time**.
+- While a session is booked and has not started, the thread goes quiet: no
+  keep-alive bump and no chase-ups, only the reminder. If Discord archives the
+  thread meanwhile, the nightly sweep quietly reopens it. Once the booked time
+  has passed, bumps and chase-ups carry on as before.
+- **My time zone** changes it. Discord never tells a bot where someone is, so
+  each person picks once, the first time they open a grid, and it is
+  remembered for every request.
+
+Hours are stored as the Unix time they start, so the two sides line up whatever
+their zones, half-hour zones included. Clock changes are handled; the hour a
+clock change skips shows greyed out.
+
+On Windows, Python has no built-in time zone list: the bot needs the `tzdata`
+package (in `requirements.txt`) installed where the service's Python can see
+it, not in a user's own site-packages.
+
 ## Editing the catalogue
 
 `ctc/catalogue.json` is the source of truth — the picker, level dropdowns, queue

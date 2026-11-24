@@ -55,6 +55,15 @@ def instructors_of(row: Any) -> list[str]:
     return [who for who in (row["instructor_id"], guest_of(row)) if who]
 
 
+def booked_for(row: Any) -> int | None:
+    """When the session is booked for, as Unix time, if it has been. Read
+    defensively, like ``guest_of``."""
+    try:
+        return int(row["booked_for"]) if row["booked_for"] else None
+    except (KeyError, IndexError):
+        return None
+
+
 class CTCDatabaseManager:
     def __init__(
         self,
@@ -563,6 +572,81 @@ class CTCDatabaseManager:
     async def mark_nudged(self, request_id: int) -> None:
         await self.connection.execute(
             "UPDATE ctc_requests SET last_nudged_at = datetime('now') WHERE id = ?", (request_id,)
+        )
+        await self.connection.commit()
+
+    # --------------------------------------------------------- scheduling
+
+    async def timezone_of(self, user_id: str) -> str | None:
+        row = await self._one("SELECT tz FROM ctc_timezones WHERE user_id = ?", (str(user_id),))
+        return row["tz"] if row else None
+
+    async def set_timezone(self, user_id: str, tz: str) -> None:
+        await self.connection.execute(
+            "INSERT INTO ctc_timezones (user_id, tz) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET tz = excluded.tz",
+            (str(user_id), tz),
+        )
+        await self.connection.commit()
+
+    async def availability(self, request_id: int) -> list[aiosqlite.Row]:
+        return await self._many(
+            "SELECT user_id, side, slot_start FROM ctc_availability "
+            "WHERE request_id = ? ORDER BY slot_start",
+            (request_id,),
+        )
+
+    async def toggle_slot(
+        self, request_id: int, *, user_id: str, side: str, slot_start: int
+    ) -> bool:
+        """Mark one hour, or unmark it if it was marked. True if it is now marked."""
+        cursor = await self.connection.execute(
+            "DELETE FROM ctc_availability "
+            "WHERE request_id = ? AND user_id = ? AND side = ? AND slot_start = ?",
+            (request_id, str(user_id), side, int(slot_start)),
+        )
+        marked = cursor.rowcount == 0
+        if marked:
+            await self.connection.execute(
+                "INSERT INTO ctc_availability (request_id, user_id, side, slot_start) "
+                "VALUES (?, ?, ?, ?)",
+                (request_id, str(user_id), side, int(slot_start)),
+            )
+        await self.connection.commit()
+        return marked
+
+    async def set_times_message(self, request_id: int, message_id: str | None) -> None:
+        await self.connection.execute(
+            "UPDATE ctc_requests SET times_message_id = ? WHERE id = ?", (message_id, request_id)
+        )
+        await self.connection.commit()
+
+    async def book(self, request_id: int, *, when: int, booked_by: str) -> aiosqlite.Row:
+        """Set when the session runs. Rebooking moves it and re-arms the reminder."""
+        row = await self.by_id(request_id)
+        if row is None:
+            raise TransitionError(f"Request #{request_id} not found.")
+        if row["status"] != "claimed":
+            raise TransitionError(f"Request #{request_id} is {row['status']}, not claimed.")
+        await self.connection.execute(
+            "UPDATE ctc_requests SET booked_for = ?, booked_by = ?, reminded_at = NULL "
+            "WHERE id = ?",
+            (int(when), str(booked_by), request_id),
+        )
+        await self.connection.commit()
+        return await self.by_id(request_id)  # type: ignore[return-value]
+
+    async def due_reminders(self, *, now: int, within: int) -> list[aiosqlite.Row]:
+        """Claimed requests booked to start in the next ``within`` seconds, not yet reminded."""
+        return await self._many(
+            "SELECT * FROM ctc_requests WHERE status = 'claimed' AND booked_for IS NOT NULL "
+            "AND reminded_at IS NULL AND booked_for > ? AND booked_for <= ?",
+            (int(now), int(now) + int(within)),
+        )
+
+    async def mark_reminded(self, request_id: int) -> None:
+        await self.connection.execute(
+            "UPDATE ctc_requests SET reminded_at = datetime('now') WHERE id = ?", (request_id,)
         )
         await self.connection.commit()
 

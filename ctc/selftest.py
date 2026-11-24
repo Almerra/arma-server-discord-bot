@@ -834,7 +834,10 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
                 ("requested", ["Claim", "Cancel", f"Assign{ellipsis}"]),
                 (
                     "claimed",
-                    ["All passed", "Partial", "Release", f"Reassign{ellipsis}", "Cancel"],
+                    [
+                        "All passed", "Partial", "Pick a time", "Set a date", "Release",
+                        f"Reassign{ellipsis}", "Cancel",
+                    ],
                 ),
                 ("completed", ["Open taw.net", "Submitted on taw.net", "Reopen"]),
                 ("awarded", []),
@@ -853,6 +856,8 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             view = ticket_view(CAT, row)
             assert labels(view) == [
                 "Record result",
+                "Pick a time",
+                "Set a date",
                 "Release",
                 "Reassign…",
                 "Cancel",
@@ -1028,6 +1033,39 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             names = {r["name"] for r in report["by_instructor"]}
             assert "Guest" in names, "Guest TI work is missing from instructor load"
 
+        async def availability_and_bookings():
+            rid = await new_request("t1")
+            assert await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=7200)
+            assert await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=10800)
+            assert not await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=7200), (
+                "a second tap unmarks the hour"
+            )
+            rows = await db.availability(rid)
+            assert [(r["user_id"], r["slot_start"]) for r in rows] == [("ti1", 10800)]
+
+            assert await db.timezone_of("u1") is None
+            await db.set_timezone("u1", "Europe/London")
+            await db.set_timezone("u1", "America/Chicago")
+            assert await db.timezone_of("u1") == "America/Chicago", "changing it replaces it"
+
+            try:
+                await db.book(rid, when=999999, booked_by="ti1")
+            except TransitionError:
+                pass
+            else:
+                raise AssertionError("an unclaimed request cannot be booked")
+
+            await db.claim(rid, instructor_id="ti1", instructor_name="Sgt")
+            r = await db.book(rid, when=100_000, booked_by="ti1")
+            assert r["booked_for"] == 100_000 and r["reminded_at"] is None
+            due = await db.due_reminders(now=97_000, within=3600)
+            assert [d["id"] for d in due] == [rid], "due within the hour"
+            assert not await db.due_reminders(now=90_000, within=3600), "not due yet"
+            await db.mark_reminded(rid)
+            assert not await db.due_reminders(now=97_000, within=3600), "reminded only once"
+            r = await db.book(rid, when=200_000, booked_by="ti1")
+            assert r["reminded_at"] is None, "rebooking re-arms the reminder"
+
         async def cards_show_both_seats():
             row = dict(await db.by_id(await new_request("g6")))
             assert labels(ticket_view(CAT, row)) == ["Claim", "Cancel", "Assign…"], (
@@ -1094,6 +1132,8 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             ("a Guest TI reopening leaves the TI seat alone", guest_reopening_keeps_the_seats),
             ("Guest TI work counts in instructor load", guest_counts_in_stats),
             ("the card shows both seats and the right Claim buttons", cards_show_both_seats),
+            ("hours toggle, time zones stick, a booking reminds once",
+             availability_and_bookings),
         ]:
             await step(name, fn)
 
@@ -2147,6 +2187,238 @@ def _() -> None:
     pattern = TicketButton.__discord_ui_compiled_template__
     assert pattern.fullmatch("ctc:guest:42")
     assert not pattern.fullmatch(PANEL_CUSTOM_ID)
+
+
+@check("the same instant shows as each person's own hour")
+def _() -> None:
+    from datetime import date
+
+    from ctc import schedule as sched
+
+    day = date(2026, 12, 5)
+    london = {h.hour: h.start for h in sched.hours_of("Europe/London", day)}
+    new_york = {h.hour: h.start for h in sched.hours_of("America/New_York", day)}
+    assert london[19] == new_york[14], "19:00 UK is 14:00 New York in December"
+
+    # Half an hour off: an India hour touches two UK hours, and must count.
+    india = {h.hour: h.start for h in sched.hours_of("Asia/Kolkata", day)}
+    uk_evening = [(london[18], london[18] + sched.HOUR)]
+    assert london[18] - india[23] == 30 * 60, "23:00 India is 17:30 UK in December"
+    assert sched.covers(uk_evening, india[23], india[23] + sched.HOUR)
+
+    for tz, label in sched.TIMEZONES:
+        sched.zone(tz)  # every offered zone must exist (needs tzdata on Windows)
+        assert len(label) <= 100, label
+    assert len(sched.TIMEZONES) <= 25, "one select holds at most 25"
+
+
+@check("a clock change drops the hour it skips, and never doubles one")
+def _() -> None:
+    from datetime import date
+
+    from ctc import schedule as sched
+
+    spring = sched.hours_of("Europe/London", date(2027, 3, 28))
+    assert spring[1].start is None, "01:00 does not exist when the UK clocks go forward"
+    starts = [h.start for h in spring if h.start is not None]
+    assert len(starts) == len(set(starts)) == 23
+
+    autumn = [h.start for h in sched.hours_of("Europe/London", date(2026, 10, 25))]
+    assert None not in autumn and len(set(autumn)) == 24
+
+
+@check("free hours merge into ranges, overlap and offer start times")
+def _() -> None:
+    from ctc import schedule as sched
+
+    H = sched.HOUR
+    assert sched.ranges([0, H, 2 * H, 4 * H]) == [(0, 3 * H), (4 * H, 5 * H)]
+    assert sched.overlap([(0, 3 * H)], [(2 * H, 6 * H)]) == [(2 * H, 3 * H)]
+    assert sched.upcoming([(0, 3 * H), (4 * H, 5 * H)], now=H + 5) == [
+        (H + 5, 3 * H), (4 * H, 5 * H)
+    ], "what has started is trimmed, what has ended is gone"
+    assert sched.booking_starts([(0, 3 * H)]) == [0, H, 2 * H]
+    assert len(sched.booking_starts([(0, 100 * H)])) == 25, "one select holds at most 25"
+    assert sched.describe([]) == "Nothing yet"
+    assert sched.describe([(0, H)]) == "<t:0:f> to <t:3600:t>"
+
+    rows = [
+        {"user_id": "ti1", "side": "trainer", "slot_start": 10 * H},
+        {"user_id": "gti", "side": "trainer", "slot_start": 11 * H},
+        {"user_id": "m1", "side": "trainee", "slot_start": 11 * H},
+    ]
+    summary = sched.summarise(rows, now=0)
+    assert summary.trainers == ["ti1", "gti"]
+    assert summary.trainer_free == [(10 * H, 12 * H)], "a TI and a Guest TI are pooled"
+    assert summary.both == [(11 * H, 12 * H)]
+
+
+@check("the grid is 24 hours and a next-day button, in your own time")
+def _() -> None:
+    from datetime import date, datetime
+
+    from ctc import schedule as sched
+    from ctc.schedule_views import AvailabilityGrid
+
+    tz = "Europe/London"
+    hours = {h.hour: h.start for h in sched.hours_of(tz, date(2026, 12, 5))}
+    now = hours[12] + 60  # just after noon on the day shown
+    assert datetime.fromtimestamp(now, sched.zone(tz)).date() == date(2026, 12, 5)
+    row = {"id": 7, "member_id": "5"}
+
+    def grid(side, mine=(), theirs=()):
+        return AvailabilityGrid(
+            None, row, user_id=1, side=side, tz=tz, day=0,
+            mine=set(mine), theirs=list(theirs), now=now,
+        )
+
+    trainer = grid("trainer", mine=[hours[19]], theirs=[(hours[19], hours[21])])
+    assert_component_limits(trainer, "grid")
+    hour_buttons = [b for b in buttons(trainer) if b.label[:2].isdigit()]
+    assert len(hour_buttons) == 24 and len(buttons(trainer)) == 25
+    by_hour = {int(b.label[:2]): b for b in hour_buttons}
+    assert by_hour[11].disabled and by_hour[12].disabled, "hours that have started are gone"
+    assert by_hour[19].style is discord.ButtonStyle.success
+    assert "\N{CHECK MARK}" in by_hour[19].label, "both free is ticked"
+    assert by_hour[20].style is discord.ButtonStyle.primary, "the trainee's hours show blue"
+    assert not by_hour[22].disabled, "an instructor can mark any hour"
+    assert buttons(trainer)[-1].label.startswith("Sun 6 Dec")
+    assert "Europe" not in trainer.content() and "UK" in trainer.content()
+
+    trainee = grid("trainee", theirs=[(hours[19], hours[21])])
+    t_hours = {int(b.label[:2]): b for b in buttons(trainee) if b.label[:2].isdigit()}
+    assert t_hours[22].disabled, "a trainee cannot pick an hour no instructor is around"
+    assert not t_hours[19].disabled and t_hours[19].style is discord.ButtonStyle.primary
+
+
+@check("schedule buttons survive a restart and do not collide with tickets")
+def _() -> None:
+    from ctc.schedule_views import ScheduleButton
+
+    schedule = ScheduleButton.__discord_ui_compiled_template__
+    ticket = TicketButton.__discord_ui_compiled_template__
+    for action in ("mark", "book", "date", "none", "zone"):
+        assert schedule.fullmatch(f"ctcsched:{action}:42")
+        assert not ticket.fullmatch(f"ctcsched:{action}:42")
+    assert ticket.fullmatch("ctc:times:42") and not schedule.fullmatch("ctc:times:42")
+    assert ticket.fullmatch("ctc:date:42")
+    assert not schedule.fullmatch(PANEL_CUSTOM_ID)
+
+
+@check("the card and the shared message show the booked time")
+def _() -> None:
+    from ctc import schedule as sched
+    from ctc.schedule_views import times_embed, times_view
+
+    row = {"id": 7, "unit": "default", "badge_key": "cqc", "levels": None,
+           "levels_achieved": None, "variant": None, "status": "claimed", "member_id": "5",
+           "instructor_id": "10", "guest_instructor_id": None, "created_at": "2026-11-24 10:00:00",
+           "notes": None, "booked_for": 1_800_000_000}
+    fields = {f.name: f.value for f in ticket_embed(CAT, row).fields}
+    assert fields["\N{CALENDAR} Booked"] == "<t:1800000000:F> (<t:1800000000:R>)"
+    assert "\N{CALENDAR} Booked" not in {
+        f.name for f in ticket_embed(CAT, {**row, "status": "awarded"}).fields
+    }, "a finished request has nothing booked to show"
+
+    summary = sched.Summary(["10"], [(0, 3600)], [], [])
+    embed = times_embed(CAT, row, summary)
+    shown = {f.name: f.value for f in embed.fields}
+    assert shown["Instructor around"].startswith("<@10>")
+    assert shown["Trainee can do"] == "Nothing yet"
+    assert labels(times_view(7)) == [
+        "Mark my times", "Book a time", "Set a date", "None of these work", "My time zone"
+    ]
+
+
+@check("Set a date picks a day, hour and minute on your own clock")
+def _() -> None:
+    from datetime import date
+
+    from ctc import schedule as sched
+    from ctc.schedule_views import SetDateView
+
+    tz = "America/New_York"
+    now = sched.at(tz, date(2026, 12, 5), 9)
+    view = SetDateView(None, 7, tz=tz, now=now)
+    assert_component_limits(view, "set date")
+    day, hour, minute = selects(view)
+    assert len(day.options) == 25 and day.options[0].label == "Today · Sat 5 Dec"
+    assert day.options[1].label.startswith("Tomorrow")
+    assert len(hour.options) == 24 and [o.label for o in minute.options] == [
+        ":00", ":15", ":30", ":45"
+    ]
+    assert button_named(view, "Set").disabled, "nothing to set until all three are picked"
+
+    picked = view.redraw(day=date(2026, 12, 6), hour=19, minute=30)
+    assert picked.chosen() == sched.at(tz, date(2026, 12, 6), 19, 30)
+    assert [o.label for o in selects(picked)[1].options if o.default] == ["19"], "choice kept"
+    button = button_named(picked, "Set for")
+    assert not button.disabled and button.label == "Set for Sun 6 Dec 19:30"
+    assert "New York" not in picked.content() and "Eastern" in picked.content()
+
+    # 02:30 does not exist the night US clocks go forward.
+    skipped = SetDateView(None, 7, tz=tz, now=sched.at(tz, date(2027, 3, 13), 9),
+                          day=date(2027, 3, 14), hour=2, minute=30)
+    assert skipped.chosen() is None and "clock change" in skipped.content()
+
+
+@check("a booked session silences the bump and the chase-ups until it starts")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC, booked_ahead
+
+    now = 1_800_000_000
+    assert booked_ahead({"booked_for": now + 60}, now)
+    assert not booked_ahead({"booked_for": now - 60}, now), "once it has started, back to normal"
+    assert not booked_ahead({"booked_for": None}, now)
+    assert not booked_ahead({}, now), "old rows without the column are not booked"
+
+    base = {"id": 1, "unit": "default", "thread_id": "50", "queue_channel_id": "60",
+            "bumped_at": None, "bump_message_id": None, "nudge_channel_id": None,
+            "nudge_message_id": None, "booked_for": None}
+    rows = [
+        {**base, "id": 1, "thread_id": "51"},                                   # normal
+        {**base, "id": 2, "thread_id": "52", "booked_for": 4_000_000_000},     # booked, open
+        {**base, "id": 3, "thread_id": "53", "booked_for": 4_000_000_000},     # booked, archived
+    ]
+
+    class Thread:
+        def __init__(self, archived=False):
+            self.archived = archived
+            self.auto_archive_duration = 10080
+            self.sent: list[str] = []
+            self.unarchived = False
+
+        async def send(self, content, **_):
+            self.sent.append(content)
+            return SimpleNamespace(id=99)
+
+        async def edit(self, archived=None, **_):
+            self.unarchived = archived is False
+
+        async def fetch_message(self, _id):
+            raise AssertionError("nothing to delete")
+
+    threads = {51: Thread(), 52: Thread(), 53: Thread(archived=True)}
+
+    async def queue():
+        return rows
+
+    async def set_bump_message(*_):
+        pass
+
+    cog = CTC.__new__(CTC)
+    cog.units = Units({}, DEFAULTS)
+    cog.database = SimpleNamespace(queue=queue, set_bump_message=set_bump_message)
+    cog.bot = SimpleNamespace(get_channel=lambda cid: threads.get(cid),
+                              logger=SimpleNamespace(warning=lambda _m: None))
+    asyncio.run(cog.bump_loop.coro(cog))
+    assert len(threads[51].sent) == 1, "an unbooked thread is still bumped"
+    assert not threads[52].sent and not threads[53].sent, "a booked thread gets no bump"
+    assert threads[53].unarchived, "a booked thread Discord archived is quietly reopened"
+
+    assert asyncio.run(cog._nudge(rows[1], "chase")) is False, "no chase-up while booked"
 
 
 @check("panels redraw on startup, so config changes reach them")

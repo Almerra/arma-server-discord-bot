@@ -52,7 +52,32 @@ CREATE TABLE IF NOT EXISTS `ctc_requests` (
   `nudge_channel_id` TEXT,
   `amended_at`       TEXT,
   `amended_by`       TEXT,
-  `amended_by_name`  TEXT
+  `amended_by_name`  TEXT,
+  `times_message_id` TEXT,
+  `booked_for`       INTEGER,
+  `booked_by`        TEXT,
+  `reminded_at`      TEXT
+);
+
+-- When the people on a request are around: one row per hour they marked.
+--
+-- `slot_start` is the Unix time the hour starts, so a TI marking 19:00 in the
+-- UK and a trainee marking 14:00 in New York land on the same row value.
+-- `side` is `trainer` (anyone who can work the request) or `trainee` (the
+-- member who asked for it).
+CREATE TABLE IF NOT EXISTS `ctc_availability` (
+  `request_id` INTEGER NOT NULL,
+  `user_id`    TEXT    NOT NULL,
+  `side`       TEXT    NOT NULL,
+  `slot_start` INTEGER NOT NULL,
+  PRIMARY KEY (`request_id`, `user_id`, `side`, `slot_start`)
+);
+
+-- Each person's time zone, picked once. Discord never tells a bot where a
+-- member is, and every grid they open is labelled in this zone.
+CREATE TABLE IF NOT EXISTS `ctc_timezones` (
+  `user_id` TEXT PRIMARY KEY,
+  `tz`      TEXT NOT NULL
 );
 
 -- Panels posted by /badge panel. Tracked so the catalogue embedded in them can
