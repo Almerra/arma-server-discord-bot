@@ -621,6 +621,29 @@ class CTCDatabaseManager:
         )
         await self.connection.commit()
 
+    async def add_times_note(self, request_id: int, message_id: str) -> None:
+        """Remember a scheduling ping, so it can be tidied away once a time is booked."""
+        await self.connection.execute(
+            "UPDATE ctc_requests SET times_note_ids = "
+            "COALESCE(times_note_ids || ',', '') || ? WHERE id = ?",
+            (str(message_id), request_id),
+        )
+        await self.connection.commit()
+
+    async def clear_times_messages(self, request_id: int) -> None:
+        """Forget the Pick a time message and its pings, once they are deleted."""
+        await self.connection.execute(
+            "UPDATE ctc_requests SET times_message_id = NULL, times_note_ids = NULL WHERE id = ?",
+            (request_id,),
+        )
+        await self.connection.commit()
+
+    async def set_booked_message(self, request_id: int, message_id: str | None) -> None:
+        await self.connection.execute(
+            "UPDATE ctc_requests SET booked_message_id = ? WHERE id = ?", (message_id, request_id)
+        )
+        await self.connection.commit()
+
     async def book(self, request_id: int, *, when: int, booked_by: str) -> aiosqlite.Row:
         """Set when the session runs. Rebooking moves it and re-arms the reminder."""
         row = await self.by_id(request_id)
@@ -643,6 +666,16 @@ class CTCDatabaseManager:
             "AND reminded_at IS NULL AND booked_for > ? AND booked_for <= ?",
             (int(now), int(now) + int(within)),
         )
+
+    async def mark_times_pinged(self, request_id: int, side: str) -> None:
+        """Record that the other side has been told about ``side``'s hours."""
+        if side not in ("trainer", "trainee"):
+            raise ValueError(f"Unknown side {side!r}")
+        await self.connection.execute(
+            f"UPDATE ctc_requests SET {side}_times_pinged_at = datetime('now') WHERE id = ?",
+            (request_id,),
+        )
+        await self.connection.commit()
 
     async def mark_reminded(self, request_id: int) -> None:
         await self.connection.execute(

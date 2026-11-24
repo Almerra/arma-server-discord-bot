@@ -36,6 +36,7 @@ from ctc.schedule_views import (
     ScheduleButton,
     SetDateView,
     TimezoneView,
+    all_times_embed,
     times_embed,
     times_view,
 )
@@ -105,6 +106,10 @@ LATER_COLUMNS: dict[str, dict[str, str]] = {
         "booked_for": "INTEGER",
         "booked_by": "TEXT",
         "reminded_at": "TEXT",
+        "trainer_times_pinged_at": "TEXT",
+        "trainee_times_pinged_at": "TEXT",
+        "times_note_ids": "TEXT",
+        "booked_message_id": "TEXT",
     },
     "ctc_panels": {"unit": "TEXT"},
 }
@@ -142,6 +147,14 @@ MAX_THREAD_NAME = 100
 
 #: How long before a booked session everyone on it is pinged, in seconds.
 REMIND_BEFORE = 3600
+
+#: How long after someone's last tap on their hour grid the other side is
+#: pinged, in seconds. Long enough that the other side has often acted already.
+PING_AFTER = 300
+
+#: Booking, by Book a time or Set a date, is for the people running the
+#: session, not the trainee or another instructor passing by.
+SEATED_ONLY = "Only the TI on this request (or its Guest TI) can book or set the time."
 
 
 def closed_name(name: str) -> str:
@@ -1254,6 +1267,9 @@ class CTC(commands.Cog, name="ctc"):
             return
 
         if action == "date":
+            if not self.is_seated(interaction.user, row):
+                await interaction.response.send_message(SEATED_ONLY, ephemeral=True)
+                return
             await self.open_set_date(interaction, row)
             return
 
@@ -1557,6 +1573,11 @@ class CTC(commands.Cog, name="ctc"):
 
     # --------------------------------------------------------- scheduling
 
+    @staticmethod
+    def is_seated(user: discord.abc.User, row: Any) -> bool:
+        """True for the request's own TI or Guest TI."""
+        return str(user.id) in instructors_of(row)
+
     def side_of(self, user: discord.abc.User, row: Any) -> str | None:
         """``trainee`` for the member who asked, ``trainer`` for anyone who can work it."""
         if str(user.id) == row["member_id"]:
@@ -1588,6 +1609,39 @@ class CTC(commands.Cog, name="ctc"):
             self.bot.logger.warning(f"CTC: could not post times for #{row['id']}: {error}")
             return
         await self.database.set_times_message(int(row["id"]), str(message.id))
+
+    async def post_times_note(self, row: Any, content: str) -> None:
+        """Post a scheduling ping and remember it, so booking can tidy it away."""
+        if not (row["thread_id"] or row["queue_channel_id"]):
+            return
+        try:
+            message = await (await self.times_channel(row)).send(content)
+        except discord.HTTPException as error:
+            self.bot.logger.warning(f"CTC: could not post to thread for #{row['id']}: {error}")
+            return
+        await self.database.add_times_note(int(row["id"]), str(message.id))
+
+    async def clear_times_messages(self, row: Any) -> None:
+        """Delete the Pick a time message and every ping it led to.
+
+        Called once a time is booked. Pings still waiting to be sent are
+        dropped as well. Pick a time on the card posts a fresh message if the
+        session needs moving.
+        """
+        request_id = int(row["id"])
+        for key in [k for k in self._later if k[0] in ("ping", "summary") and k[1] == request_id]:
+            self._later.pop(key).cancel()
+        ids = [row["times_message_id"], *(row["times_note_ids"] or "").split(",")]
+        ids = [i for i in ids if i]
+        if ids and (row["thread_id"] or row["queue_channel_id"]):
+            with contextlib.suppress(discord.HTTPException):
+                channel = await self.times_channel(row)
+                for message_id in ids:
+                    # Best effort each: one tidied away by hand must not
+                    # leave the rest behind.
+                    with contextlib.suppress(discord.HTTPException):
+                        await channel.get_partial_message(int(message_id)).delete()
+        await self.database.clear_times_messages(request_id)
 
     async def refresh_times_message(self, request_id: int) -> None:
         row = await self.database.by_id(request_id)
@@ -1670,11 +1724,19 @@ class CTC(commands.Cog, name="ctc"):
         if action == "mark":
             await self.open_grid(interaction, row, side)
 
+        elif action == "hours":
+            await interaction.response.send_message(
+                embed=all_times_embed(
+                    row,
+                    await self.times_summary(request_id),
+                    await self.database.timezone_of(str(interaction.user.id)),
+                ),
+                ephemeral=True,
+            )
+
         elif action == "date":
-            if not self.can_work_row(interaction.user, row):
-                await interaction.response.send_message(
-                    "Only the instructor can set the time.", ephemeral=True
-                )
+            if not self.is_seated(interaction.user, row):
+                await interaction.response.send_message(SEATED_ONLY, ephemeral=True)
                 return
             await self.open_set_date(interaction, row)
 
@@ -1688,17 +1750,15 @@ class CTC(commands.Cog, name="ctc"):
             await interaction.response.send_message(
                 "Told the instructor. They will mark some more hours.", ephemeral=True
             )
-            await self.post_to_thread(
+            await self.post_times_note(
                 row,
                 f"{' '.join(f'<@{t}>' for t in trainers)} <@{row['member_id']}> cannot make "
                 "any of the hours marked so far. Add some more with **Mark my times**.",
             )
 
         elif action == "book":
-            if not self.can_work_row(interaction.user, row):
-                await interaction.response.send_message(
-                    "Only the instructor can book the time.", ephemeral=True
-                )
+            if not self.is_seated(interaction.user, row):
+                await interaction.response.send_message(SEATED_ONLY, ephemeral=True)
                 return
             starts = sched.booking_starts((await self.times_summary(request_id)).both)
             if not starts:
@@ -1799,7 +1859,9 @@ class CTC(commands.Cog, name="ctc"):
             request_id, side, actor = grid.request_id, grid.side, interaction.user.id
             self.later(("summary", request_id), 5, lambda: self.refresh_times_message(request_id))
             self.later(
-                ("ping", request_id, side), 60, lambda: self.announce_times(request_id, side, actor)
+                ("ping", request_id, side),
+                PING_AFTER,
+                lambda: self.announce_times(request_id, side, actor),
             )
         grid.stop()
         await self.open_grid(interaction, row, grid.side, day=grid.day, edit=True)
@@ -1824,7 +1886,7 @@ class CTC(commands.Cog, name="ctc"):
         if side is not None and view.then == "mark":
             await self.open_grid(interaction, row, side, edit=True)
             return
-        if row is not None and view.then == "date" and self.can_work_row(interaction.user, row):
+        if row is not None and view.then == "date" and self.is_seated(interaction.user, row):
             await self.open_set_date(interaction, row, edit=True)
             return
         await interaction.response.edit_message(
@@ -1832,19 +1894,33 @@ class CTC(commands.Cog, name="ctc"):
         )
 
     async def announce_times(self, request_id: int, side: str, actor_id: int) -> None:
-        """Tell the other side, once someone has stopped marking hours."""
+        """Tell the other side, once someone has stopped marking hours.
+
+        Once per side per request: the first set of hours is news, later
+        changes only update the shared message. Recorded on the row, so a
+        restart does not ping again.
+
+        And not at all when the ping would ask for something already done:
+        the trainee is not told to pick hours they have already picked, and
+        the instructor is not told to book a session that is already booked.
+        """
         row = await self.database.by_id(request_id)
-        if row is None or row["status"] != "claimed":
+        if row is None or row["status"] != "claimed" or row[f"{side}_times_pinged_at"]:
             return
         summary = await self.times_summary(request_id)
+        answered = booked_ahead(row) or (side == "trainer" and summary.trainee_free)
+        if answered:
+            await self.database.mark_times_pinged(request_id, side)
+            return
         if side == "trainer":
             if not summary.trainer_free:
                 return
-            await self.post_to_thread(
+            await self.post_times_note(
                 row,
                 f"<@{row['member_id']}> <@{actor_id}> has marked when they are around. "
                 "Press **Mark my times** on the Pick a time message to pick the hours you can do.",
             )
+            await self.database.mark_times_pinged(request_id, side)
             return
 
         trainers = summary.trainers or instructors_of(row)
@@ -1858,18 +1934,19 @@ class CTC(commands.Cog, name="ctc"):
             )
         else:
             tail = " Nothing lines up with your hours yet."
-        await self.post_to_thread(
+        await self.post_times_note(
             row,
             f"{' '.join(f'<@{t}>' for t in trainers)} <@{row['member_id']}> has picked the "
             f"hours they can do.{tail}",
         )
+        await self.database.mark_times_pinged(request_id, side)
 
     async def book_time(self, interaction: discord.Interaction, request_id: int, when: int) -> None:
+        """Book a session, from Book a time or Set a date. Checked again here,
+        since the seats can change while a picker sits open."""
         row = await self.database.by_id(request_id)
-        if row is None or not self.can_work_row(interaction.user, row):
-            await interaction.response.edit_message(
-                content="Only the instructor can book the time.", view=None
-            )
+        if row is None or not self.is_seated(interaction.user, row):
+            await interaction.response.edit_message(content=SEATED_ONLY, view=None)
             return
         if when <= time.time():
             await interaction.response.edit_message(
@@ -1886,7 +1963,9 @@ class CTC(commands.Cog, name="ctc"):
 
         await interaction.response.edit_message(content=f"Booked for <t:{when}:F>.", view=None)
         await self.refresh_ticket(updated)
-        await self.refresh_times_message(request_id)
+        # The Pick a time message and its pings have done their job. The
+        # card carries the booked time from here on.
+        await self.clear_times_messages(updated)
         # The thread goes quiet until the reminder, so the last keep-alive
         # bump has nothing left to do.
         if updated["bump_message_id"] and updated["thread_id"]:
@@ -1896,11 +1975,22 @@ class CTC(commands.Cog, name="ctc"):
         people = dict.fromkeys(
             [updated["member_id"], *instructors_of(updated), str(interaction.user.id)]
         )
-        await self.post_to_thread(
-            updated,
-            f"\N{CALENDAR} Booked for <t:{when}:F> (<t:{when}:R>). "
-            + " ".join(f"<@{p}>" for p in people),
-        )
+        if not (updated["thread_id"] or updated["queue_channel_id"]):
+            return
+        try:
+            channel = await self.times_channel(updated)
+            # A rebooking replaces the old announcement rather than adding to it.
+            if updated["booked_message_id"]:
+                with contextlib.suppress(discord.HTTPException):
+                    await channel.get_partial_message(int(updated["booked_message_id"])).delete()
+            message = await channel.send(
+                f"\N{CALENDAR} Booked for <t:{when}:F> (<t:{when}:R>). "
+                + " ".join(f"<@{p}>" for p in people)
+            )
+        except discord.HTTPException as error:
+            self.bot.logger.warning(f"CTC: could not announce booking for #{request_id}: {error}")
+            return
+        await self.database.set_booked_message(request_id, str(message.id))
 
     @tasks.loop(minutes=5)
     async def reminder_loop(self) -> None:

@@ -20,7 +20,10 @@ from .catalogue import Catalogue
 from .views import COLOUR
 
 #: Actions on the shared message. Named explicitly, as with ticket actions.
-SCHEDULE_ACTIONS = ("mark", "book", "date", "none", "zone")
+SCHEDULE_ACTIONS = ("mark", "book", "date", "none", "zone", "hours")
+
+#: Both-free times shown on the shared message; the rest are a button away.
+SHOWN_ON_MESSAGE = 5
 
 
 class ScheduleButton(
@@ -85,42 +88,66 @@ def times_view(request_id: int) -> discord.ui.View:
     view.add_item(
         ScheduleButton("zone", request_id, label="My time zone", emoji="\N{GLOBE WITH MERIDIANS}")
     )
+    view.add_item(ScheduleButton("hours", request_id, label="All times"))
     return view
 
 
 def times_embed(cat: Catalogue, row: Any, summary: sched.Summary) -> discord.Embed:
-    """The shared message. Every time on it is a Discord timestamp, so each
-    reader sees it in their own time zone without setting anything."""
+    """The shared message, kept short: who has marked hours, and the next
+    few times both are free. The full lists are behind **All times**.
+
+    Every time on it is a Discord timestamp, so each reader sees it in their
+    own time zone without setting anything.
+    """
     badge = cat.get(row["badge_key"])
+    trainers = " ".join(f"<@{t}>" for t in summary.trainers) or "Instructor"
+    lines = [
+        f"{trainers}: "
+        + (f"{sched.total_hours(summary.trainer_free)} marked" if summary.trainer_free
+           else "no hours marked yet"),
+        f"<@{row['member_id']}>: "
+        + (f"{sched.total_hours(summary.trainee_free)} picked" if summary.trainee_free
+           else "no hours picked yet"),
+    ]
     embed = discord.Embed(
         colour=COLOUR,
         title=f"\N{SPIRAL CALENDAR PAD} Pick a time · {badge.name if badge else row['badge_key']}",
-        description=(
-            f"Training for <@{row['member_id']}>. The instructor marks when they are "
-            "around, then the trainee picks the hours they can do. Times below show in "
-            "your own time zone."
-        ),
-    )
-    trainers = " ".join(f"<@{t}>" for t in summary.trainers)
-    embed.add_field(
-        name="Instructor around",
-        value=(f"{trainers}\n" if trainers else "") + sched.describe(summary.trainer_free),
-        inline=False,
-    )
-    embed.add_field(
-        name="Trainee can do", value=sched.describe(summary.trainee_free), inline=False
-    )
-    embed.add_field(
-        name="\N{WHITE HEAVY CHECK MARK} Both free",
-        value=sched.describe(summary.both),
-        inline=False,
+        description="\n".join(lines),
     )
     when = booked_for(row)
     if when:
         embed.add_field(
             name="\N{CALENDAR} Booked", value=f"<t:{when}:F> (<t:{when}:R>)", inline=False
         )
-    embed.set_footer(text=f"Request #{row['id']}")
+    elif summary.both:
+        embed.add_field(
+            name="\N{WHITE HEAVY CHECK MARK} Both free, in your time",
+            value=sched.describe(summary.both, limit=SHOWN_ON_MESSAGE),
+            inline=False,
+        )
+    embed.set_footer(text=f"Request #{row['id']} · All times shows every hour marked")
+    return embed
+
+
+def all_times_embed(row: Any, summary: sched.Summary, tz: str | None) -> discord.Embed:
+    """Every marked hour, for one person. With their time zone known it is
+    grouped a line per day on their clock; without, it falls back to
+    timestamps."""
+
+    def show(spans: list[tuple[int, int]]) -> str:
+        text = sched.by_day(tz, spans) if tz else sched.describe(spans, limit=20)
+        return text if len(text) <= 1024 else text[:1020].rsplit("\n", 1)[0] + "\n…"
+
+    embed = discord.Embed(colour=COLOUR, title=f"All times · request #{row['id']}")
+    embed.add_field(name="Instructor around", value=show(summary.trainer_free), inline=False)
+    embed.add_field(name="Trainee can do", value=show(summary.trainee_free), inline=False)
+    embed.add_field(
+        name="\N{WHITE HEAVY CHECK MARK} Both free", value=show(summary.both), inline=False
+    )
+    embed.set_footer(
+        text=f"In your time ({sched.zone_label(tz)})" if tz
+        else "Set My time zone for a tidier list"
+    )
     return embed
 
 

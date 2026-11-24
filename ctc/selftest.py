@@ -2297,7 +2297,7 @@ def _() -> None:
 
     schedule = ScheduleButton.__discord_ui_compiled_template__
     ticket = TicketButton.__discord_ui_compiled_template__
-    for action in ("mark", "book", "date", "none", "zone"):
+    for action in ("mark", "book", "date", "none", "zone", "hours"):
         assert schedule.fullmatch(f"ctcsched:{action}:42")
         assert not ticket.fullmatch(f"ctcsched:{action}:42")
     assert ticket.fullmatch("ctc:times:42") and not schedule.fullmatch("ctc:times:42")
@@ -2322,11 +2322,26 @@ def _() -> None:
 
     summary = sched.Summary(["10"], [(0, 3600)], [], [])
     embed = times_embed(CAT, row, summary)
-    shown = {f.name: f.value for f in embed.fields}
-    assert shown["Instructor around"].startswith("<@10>")
-    assert shown["Trainee can do"] == "Nothing yet"
+    assert embed.description == "<@10>: 1 h marked\n<@5>: no hours picked yet"
+    assert [f.name for f in embed.fields] == ["\N{CALENDAR} Booked"], "booked replaces the list"
+
+    from ctc.schedule_views import SHOWN_ON_MESSAGE, all_times_embed
+
+    H = sched.HOUR
+    many = [(i * 2 * H, i * 2 * H + H) for i in range(40)]
+    busy = times_embed(CAT, {**row, "booked_for": None}, sched.Summary(["10"], many, many, many))
+    assert busy.description == "<@10>: 40 h marked\n<@5>: 40 h picked"
+    (both,) = busy.fields
+    assert both.value.count("<t:") == 2 * SHOWN_ON_MESSAGE and "more" in both.value
+    assert len(busy.description) + len(both.value) < 500, "the shared message stays short"
+
+    full = all_times_embed(row, sched.Summary(["10"], many, many, many), "Etc/UTC")
+    assert all(len(f.value) <= 1024 for f in full.fields)
+    assert full.fields[0].value.startswith("**Thu 1 Jan** · 00:00-01:00, 02:00-03:00")
+    assert "<t:" in all_times_embed(row, sched.Summary([], many, [], []), None).fields[0].value
     assert labels(times_view(7)) == [
-        "Mark my times", "Book a time", "Set a date", "None of these work", "My time zone"
+        "Mark my times", "Book a time", "Set a date", "None of these work", "My time zone",
+        "All times",
     ]
 
 
@@ -2360,6 +2375,205 @@ def _() -> None:
     skipped = SetDateView(None, 7, tz=tz, now=sched.at(tz, date(2027, 3, 13), 9),
                           day=date(2027, 3, 14), hour=2, minute=30)
     assert skipped.chosen() is None and "clock change" in skipped.content()
+
+
+@check("each side is pinged once about the other's hours, never again")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    future = 4_000_000_000
+    row = {"id": 9, "unit": "default", "member_id": "5", "status": "claimed",
+           "instructor_id": "10", "guest_instructor_id": None,
+           "trainer_times_pinged_at": None, "trainee_times_pinged_at": None}
+    marked = [{"user_id": "10", "side": "trainer", "slot_start": future}]
+    posted: list[str] = []
+
+    async def by_id(_rid):
+        return dict(row)
+
+    async def availability(_rid):
+        return marked
+
+    async def mark_times_pinged(_rid, side):
+        row[f"{side}_times_pinged_at"] = "now"
+
+    async def post_to_thread(_row, content):
+        posted.append(content)
+
+    async def post_times_note(_row, content):
+        posted.append(content)
+
+    cog = CTC.__new__(CTC)
+    cog.database = SimpleNamespace(
+        by_id=by_id, availability=availability, mark_times_pinged=mark_times_pinged
+    )
+    cog.post_to_thread = post_to_thread
+    cog.post_times_note = post_times_note
+
+    for _ in range(3):  # the instructor keeps changing their hours
+        asyncio.run(cog.announce_times(9, "trainer", 10))
+    assert len(posted) == 1 and posted[0].startswith("<@5>"), posted
+
+    marked.append({"user_id": "5", "side": "trainee", "slot_start": future})
+    for _ in range(3):  # and so does the trainee
+        asyncio.run(cog.announce_times(9, "trainee", 5))
+    assert len(posted) == 2 and posted[1].startswith("<@10>"), posted
+    assert "line up" in posted[1], "the one ping says what lines up"
+
+    # No ping for something already done by the time the wait is over.
+    def fresh(**extra):
+        row.update({"trainer_times_pinged_at": None, "trainee_times_pinged_at": None,
+                    "booked_for": None, **extra})
+        posted.clear()
+
+    fresh()  # the trainee picked hours before the instructor's ping was due
+    asyncio.run(cog.announce_times(9, "trainer", 10))
+    assert not posted and row["trainer_times_pinged_at"], "trainee already picked: no ping"
+
+    fresh(booked_for=future)  # the instructor booked before the trainee's ping was due
+    asyncio.run(cog.announce_times(9, "trainee", 5))
+    assert not posted and row["trainee_times_pinged_at"], "already booked: no ping"
+
+    marked.pop()  # booked by Set a date before the trainee picked anything
+    fresh(booked_for=future)
+    asyncio.run(cog.announce_times(9, "trainer", 10))
+    assert not posted, "already booked: the trainee is not asked to pick hours"
+
+    from cogs.ctc import PING_AFTER
+
+    assert PING_AFTER == 300, "the other side gets five minutes to act first"
+
+
+@check("booking deletes the Pick a time message and its pings")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    deleted: list[int] = []
+    cleared: list[int] = []
+
+    class Channel:
+        def get_partial_message(self, message_id):
+            async def delete():
+                if message_id == 102:  # someone already removed this one by hand
+                    raise discord.NotFound(
+                        SimpleNamespace(status=404, reason="Not Found"), {"code": 10008}
+                    )
+                deleted.append(message_id)
+
+            return SimpleNamespace(delete=delete)
+
+    async def clear_times_messages(rid):
+        cleared.append(rid)
+
+    async def scenario():
+        cog = CTC.__new__(CTC)
+        cog.bot = SimpleNamespace(get_channel=lambda _cid: Channel())
+        cog.database = SimpleNamespace(clear_times_messages=clear_times_messages)
+        waiting = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+        other = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+        cog._later = {("ping", 7, "trainer"): waiting, ("ping", 8, "trainer"): other}
+        row = {"id": 7, "thread_id": "50", "queue_channel_id": "60",
+               "times_message_id": "100", "times_note_ids": "101,102,103"}
+        await cog.clear_times_messages(row)
+        await asyncio.sleep(0)
+        assert waiting.cancelled(), "a ping still waiting is dropped"
+        assert list(cog._later) == [("ping", 8, "trainer")], "other requests are untouched"
+        other.cancel()
+
+    asyncio.run(scenario())
+    assert deleted == [100, 101, 103], "one already gone must not leave the rest behind"
+    assert cleared == [7]
+
+
+@check("only the request's TI or Guest TI can Book a time")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC, SEATED_ONLY
+
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20",
+           "thread_id": None, "queue_channel_id": None}
+
+    def press(user_id: int) -> list[str]:
+        cog = CTC.__new__(CTC)
+        cog.units = Units({}, DEFAULTS)  # no roles set: everyone counts as an instructor
+        sent: list[str] = []
+
+        async def by_id(_rid):
+            return dict(row)
+
+        async def availability(_rid):
+            return []
+
+        async def book(*_a, **_k):
+            raise TransitionError("reached booking")  # past the seat check, stop here
+
+        async def send_message(content, **_):
+            sent.append(content)
+
+        async def edit_message(content=None, **_):
+            sent.append(content)
+
+        cog.database = SimpleNamespace(by_id=by_id, availability=availability, book=book)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=user_id, display_name="x"),
+            response=SimpleNamespace(send_message=send_message, edit_message=edit_message),
+        )
+        asyncio.run(cog.handle_schedule_action(interaction, "book", 9))
+        asyncio.run(cog.book_time(interaction, 9, 4_000_000_000))
+        return sent
+
+    for seated in (10, 20):
+        opened, booked = press(seated)
+        assert opened.startswith("Nothing lines up yet"), "the seated TI gets the booking list"
+        assert booked.endswith("reached booking"), booked
+    for outsider, who in ((30, "another instructor"), (5, "the trainee")):
+        assert press(outsider) == [SEATED_ONLY, SEATED_ONLY], f"{who} cannot book"
+
+
+@check("only the request's TI or Guest TI can Set a date")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC, SEATED_ONLY
+
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20"}
+
+    def press(user_id: int, via: str):
+        cog = CTC.__new__(CTC)
+        cog.units = Units({}, DEFAULTS)  # no roles set: everyone counts as an instructor
+        sent, opened = [], []
+
+        async def by_id(_rid):
+            return dict(row)
+
+        async def send_message(content, **_):
+            sent.append(content)
+
+        async def open_set_date(_interaction, r, **_):
+            opened.append(r["id"])
+
+        cog.database = SimpleNamespace(by_id=by_id)
+        cog.open_set_date = open_set_date
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=user_id, display_name="x"),
+            response=SimpleNamespace(send_message=send_message),
+        )
+        handler = cog.handle_ticket_action if via == "card" else cog.handle_schedule_action
+        asyncio.run(handler(interaction, "date", 9))
+        return sent, opened
+
+    for via in ("card", "shared message"):
+        assert press(10, via) == ([], [9]), f"the TI can set it ({via})"
+        assert press(20, via) == ([], [9]), f"the Guest TI can set it ({via})"
+        assert press(30, via) == ([SEATED_ONLY], []), f"another instructor cannot ({via})"
+        assert press(5, via) == ([SEATED_ONLY], []), f"the trainee cannot ({via})"
 
 
 @check("a booked session silences the bump and the chase-ups until it starts")
