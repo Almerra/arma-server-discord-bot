@@ -204,6 +204,29 @@ def summarise(rows: Iterable[Any], now: float) -> Summary:
     return Summary(trainers, trainer_free, trainee_free, overlap(trainer_free, trainee_free))
 
 
+def total_hours(spans: Sequence[tuple[int, int]]) -> str:
+    """How much time a set of ranges covers, written as hours."""
+    hours = sum(e - s for s, e in spans) / HOUR
+    return f"{hours:g} h"
+
+
+def by_day(tz: str, spans: Sequence[tuple[int, int]]) -> str:
+    """Ranges written out on one person's clock, a line per day.
+
+    Only for text a single person sees, since it is fixed to their zone:
+    "Wed 25 Nov · 06:00-07:00, 21:00-22:00". A range is filed under the day
+    it starts.
+    """
+    if not spans:
+        return "Nothing yet"
+    here = zone(tz)
+    days: dict[date, list[str]] = {}
+    for start, end in spans:
+        a, b = datetime.fromtimestamp(start, here), datetime.fromtimestamp(end, here)
+        days.setdefault(a.date(), []).append(f"{a:%H:%M}-{b:%H:%M}")
+    return "\n".join(f"**{day_label(day)}** · {', '.join(times)}" for day, times in days.items())
+
+
 def describe(spans: Sequence[tuple[int, int]], limit: int = 10) -> str:
     """Ranges as Discord timestamps, which every reader sees in their own time."""
     if not spans:

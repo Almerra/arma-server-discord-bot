@@ -409,23 +409,36 @@ the shared message:
   trainee can only pick hours an instructor is around (blue); the rest are
   greyed out. Hours both have marked get a tick. A TI's and a Guest TI's hours
   are pooled.
-- The shared message lists who is around, what the trainee can do, and when
-  both are free. Every time on it is a Discord timestamp, so each reader sees
-  their own local time.
-- Once someone stops tapping for a minute, the other side is pinged once: the
-  trainee when the instructor has marked hours, the instructor when the trainee
-  has picked theirs.
+- The shared message stays short: how many hours each side has marked, and the
+  next five times both are free (or the booked time, once there is one). Those
+  times are Discord timestamps, so each reader sees their own local time.
+- **All times** shows the presser every marked hour, privately, a line per day
+  on their own clock.
+- Each side is pinged once per request, five minutes after the other's last
+  tap: the trainee the first time the instructor has marked hours, the
+  instructor the first time the trainee has picked theirs. Later changes update
+  the shared message without pinging anyone.
+- A ping that would ask for something already done is skipped: no ping to the
+  trainee if they have already picked hours, none to the instructor if the
+  session is already booked.
 - **None of these work** (trainee) pings the instructor to add more hours.
-- **Book a time** (instructor) offers start times where both are free, in the
-  instructor's own time. The booked time goes on the card and the shared
-  message, and everyone on the request is pinged about an hour before.
-- **Set a date** (instructor), on the card and on the shared message, books a
-  time agreed without the grid: pick the day (next 25 days), hour and minute on
-  your own clock. It books exactly like **Book a time**.
+- **Book a time** offers start times where both are free, in the booker's own
+  time. Only the request's own TI or Guest TI can book. The booked time goes on
+  the card and the shared message, and everyone on the request is pinged about
+  an hour before.
+- **Set a date**, on the card and on the shared message, books a time agreed
+  without the grid: pick the day (next 25 days), hour and minute on your own
+  clock. It books exactly like **Book a time**, with the same rule: only the
+  request's own TI or Guest TI, never the trainee or another instructor.
+  Booking is always done by a person: nothing is booked automatically.
 - While a session is booked and has not started, the thread goes quiet: no
   keep-alive bump and no chase-ups, only the reminder. If Discord archives the
   thread meanwhile, the nightly sweep quietly reopens it. Once the booked time
   has passed, bumps and chase-ups carry on as before.
+- Once a time is booked, the shared message and the pings that led up to it
+  are deleted, leaving the card's Booked line and one "Booked for" message. A
+  rebooking replaces that message. To move a session, use **Set a date** on the
+  card, or **Pick a time** for a fresh shared message.
 - **My time zone** changes it. Discord never tells a bot where someone is, so
   each person picks once, the first time they open a grid, and it is
   remembered for every request.

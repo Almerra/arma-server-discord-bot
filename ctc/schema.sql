@@ -56,7 +56,11 @@ CREATE TABLE IF NOT EXISTS `ctc_requests` (
   `times_message_id` TEXT,
   `booked_for`       INTEGER,
   `booked_by`        TEXT,
-  `reminded_at`      TEXT
+  `reminded_at`      TEXT,
+  `trainer_times_pinged_at` TEXT,
+  `trainee_times_pinged_at` TEXT,
+  `times_note_ids`   TEXT,
+  `booked_message_id` TEXT
 );
 
 -- When the people on a request are around: one row per hour they marked.
