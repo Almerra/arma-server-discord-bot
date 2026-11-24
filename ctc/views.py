@@ -15,7 +15,7 @@ from typing import Any
 
 import discord
 
-from . import guest_of
+from . import booked_for, guest_of
 from .catalogue import Badge, Catalogue
 
 # An action row holds 5 buttons or a single select, and a message holds 5 rows.
@@ -225,6 +225,12 @@ def ticket_embed(cat: Catalogue, row: Any, site_url: str = "") -> discord.Embed:
             inline=False,
         )
 
+    when = booked_for(row)
+    if when and row["status"] == "claimed":
+        embed.add_field(
+            name="\N{CALENDAR} Booked", value=f"<t:{when}:F> (<t:{when}:R>)", inline=False
+        )
+
     if row["notes"]:
         embed.add_field(name="Notes", value=row["notes"][:1024], inline=False)
 
@@ -238,6 +244,7 @@ def ticket_embed(cat: Catalogue, row: Any, site_url: str = "") -> discord.Embed:
 #: swallow any other ``ctc:*:*`` custom_id — the panel button did exactly that.
 TICKET_ACTIONS = (
     "claim", "guest", "cancel", "release", "complete", "result", "award", "reopen", "assign",
+    "times", "date",
 )
 
 
@@ -341,6 +348,10 @@ def ticket_view(
                     TicketButton("result", rid, label="Partial", emoji="\N{WARNING SIGN}")
                 )
         claim_buttons()
+        view.add_item(
+            TicketButton("times", rid, label="Pick a time", emoji="\N{SPIRAL CALENDAR PAD}")
+        )
+        view.add_item(TicketButton("date", rid, label="Set a date", emoji="\N{CALENDAR}"))
         view.add_item(TicketButton("release", rid, label="Release"))
         view.add_item(TicketButton("assign", rid, label="Reassign…"))
         view.add_item(TicketButton("cancel", rid, label="Cancel", style=discord.ButtonStyle.danger))

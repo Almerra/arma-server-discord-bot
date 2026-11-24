@@ -13,9 +13,11 @@ The cog owns its own SQLite file and registers its own persistent components in
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime
 import os
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -24,9 +26,19 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from ctc import CTCDatabaseManager, TransitionError, guest_of, instructors_of
+from ctc import CTCDatabaseManager, TransitionError, booked_for, guest_of, instructors_of
 from ctc import catalogue as catalogue_module
+from ctc import schedule as sched
 from ctc.config_views import ConfigRootView
+from ctc.schedule_views import (
+    AvailabilityGrid,
+    BookView,
+    ScheduleButton,
+    SetDateView,
+    TimezoneView,
+    times_embed,
+    times_view,
+)
 from ctc.units import Unit, UnitError, Units
 from utils.battalions import battalions, battalion_autocomplete
 from ctc.views import (
@@ -89,6 +101,10 @@ LATER_COLUMNS: dict[str, dict[str, str]] = {
         "unit": "TEXT",
         "guest_instructor_id": "TEXT",
         "guest_instructor_name": "TEXT",
+        "times_message_id": "TEXT",
+        "booked_for": "INTEGER",
+        "booked_by": "TEXT",
+        "reminded_at": "TEXT",
     },
     "ctc_panels": {"unit": "TEXT"},
 }
@@ -124,6 +140,9 @@ CLOSED_PREFIX = "CLOSED: "
 #: Discord's hard limit on a thread name.
 MAX_THREAD_NAME = 100
 
+#: How long before a booked session everyone on it is pinged, in seconds.
+REMIND_BEFORE = 3600
+
 
 def closed_name(name: str) -> str:
     """``name`` with the closed prefix, trimmed to fit and never doubled."""
@@ -140,6 +159,16 @@ def open_name(name: str) -> str:
     the thread no longer reads as closed.
     """
     return name[len(CLOSED_PREFIX):] if name.startswith(CLOSED_PREFIX) else name
+
+
+def booked_ahead(row: Any, now: float | None = None) -> bool:
+    """True while a request has a session booked that has not started yet.
+
+    Until then its thread is quiet on purpose: no keep-alive bump and no
+    chase-up, only the reminder before the session.
+    """
+    when = booked_for(row)
+    return when is not None and when > (time.time() if now is None else now)
 
 
 def bump_due(last: str | None, thread: Any, days: int) -> bool:
@@ -201,6 +230,8 @@ class CTC(commands.Cog, name="ctc"):
         self.bot = bot
         self.database: CTCDatabaseManager | None = None
         self.units = Units(self.raw_config(bot), DEFAULTS)
+        #: Jobs waiting for someone to stop tapping, keyed by what they do.
+        self._later: dict[tuple[Any, ...], asyncio.Task] = {}
 
     # ------------------------------------------------------------- wiring
 
@@ -269,8 +300,11 @@ class CTC(commands.Cog, name="ctc"):
         # separate panel per battalion without them opening each other's
         # badges.
         self.bot.add_dynamic_items(PanelButton)
+        # And the Pick a time message in each request's thread.
+        self.bot.add_dynamic_items(ScheduleButton)
         self.nudge_loop.start()
         self.bump_loop.start()
+        self.reminder_loop.start()
         # Settings a panel renders -- the site links, the battalion's name --
         # only change in config.json, and nothing else would ever redraw a
         # pinned panel for them. Refreshing once on startup means a restart is
@@ -285,8 +319,12 @@ class CTC(commands.Cog, name="ctc"):
     async def cog_unload(self) -> None:
         self.nudge_loop.cancel()
         self.bump_loop.cancel()
+        self.reminder_loop.cancel()
+        for pending in self._later.values():
+            pending.cancel()
         # Unregister so a cog reload does not double-register the handler.
         self.bot.remove_dynamic_items(TicketButton)
+        self.bot.remove_dynamic_items(ScheduleButton)
         if self.database is not None:
             await self.database.connection.close()
 
@@ -1208,6 +1246,17 @@ class CTC(commands.Cog, name="ctc"):
             )
             return
 
+        if action == "times":
+            # Answer first: posting the shared message is a second request to
+            # Discord, and the press has to be answered within three seconds.
+            await self.open_grid(interaction, row, "trainer")
+            await self.ensure_times_message(row)
+            return
+
+        if action == "date":
+            await self.open_set_date(interaction, row)
+            return
+
         if action == "assign":
             if not self.can_assign(self.unit_of(row), interaction.user):
                 await interaction.response.send_message(
@@ -1506,6 +1555,372 @@ class CTC(commands.Cog, name="ctc"):
             f"<@{interaction.user.id}> reopened this request. Any previous result has been cleared.",
         )
 
+    # --------------------------------------------------------- scheduling
+
+    def side_of(self, user: discord.abc.User, row: Any) -> str | None:
+        """``trainee`` for the member who asked, ``trainer`` for anyone who can work it."""
+        if str(user.id) == row["member_id"]:
+            return "trainee"
+        if self.can_work_row(user, row):
+            return "trainer"
+        return None
+
+    async def times_summary(self, request_id: int) -> sched.Summary:
+        return sched.summarise(await self.database.availability(request_id), time.time())
+
+    async def times_channel(self, row: Any) -> Any:
+        channel_id = int(row["thread_id"] or row["queue_channel_id"])
+        return self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+
+    async def ensure_times_message(self, row: Any) -> None:
+        """Post the shared Pick a time message in the request's thread, once."""
+        if row["times_message_id"] or not (row["thread_id"] or row["queue_channel_id"]):
+            return
+        try:
+            channel = await self.times_channel(row)
+            message = await channel.send(
+                embed=times_embed(
+                    self.catalogue_of(row), row, await self.times_summary(int(row["id"]))
+                ),
+                view=times_view(int(row["id"])),
+            )
+        except discord.HTTPException as error:
+            self.bot.logger.warning(f"CTC: could not post times for #{row['id']}: {error}")
+            return
+        await self.database.set_times_message(int(row["id"]), str(message.id))
+
+    async def refresh_times_message(self, request_id: int) -> None:
+        row = await self.database.by_id(request_id)
+        if row is None or not row["times_message_id"]:
+            return
+        try:
+            channel = await self.times_channel(row)
+            message = await channel.fetch_message(int(row["times_message_id"]))
+            await message.edit(
+                embed=times_embed(
+                    self.catalogue_of(row), row, await self.times_summary(request_id)
+                ),
+                view=times_view(request_id),
+            )
+        except discord.NotFound:
+            # Deleted by hand: forget it, so the next Pick a time posts a new one.
+            await self.database.set_times_message(request_id, None)
+        except discord.HTTPException as error:
+            self.bot.logger.warning(f"CTC: could not refresh times for #{request_id}: {error}")
+
+    def later(self, key: tuple[Any, ...], delay: float, job: Any) -> None:
+        """Run ``job`` once nobody has called this with ``key`` for ``delay`` seconds.
+
+        A grid saves on every tap, and a summary edit or a ping per tap would
+        bury the thread, so both wait for the tapping to stop. A restart drops
+        whatever is waiting, which costs at most one ping.
+        """
+        pending = self._later.pop(key, None)
+        if pending is not None:
+            pending.cancel()
+
+        async def run() -> None:
+            try:
+                await asyncio.sleep(delay)
+                await job()
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:  # noqa: BLE001 - a lost ping must not kill the task
+                self.bot.logger.warning(f"CTC: scheduled job {key} failed: {error}")
+            finally:
+                if self._later.get(key) is task:
+                    del self._later[key]
+
+        task = asyncio.get_running_loop().create_task(run())
+        self._later[key] = task
+
+    async def handle_schedule_action(
+        self, interaction: discord.Interaction, action: str, request_id: int
+    ) -> None:
+        row = await self.database.by_id(request_id)
+        if row is None:
+            await interaction.response.send_message(
+                f"Request #{request_id} no longer exists.", ephemeral=True
+            )
+            return
+
+        side = self.side_of(interaction.user, row)
+        if side is None:
+            await interaction.response.send_message(
+                "This is for the trainee and the instructors on this request.", ephemeral=True
+            )
+            return
+
+        if action == "zone":
+            current = await self.database.timezone_of(str(interaction.user.id))
+            await interaction.response.send_message(
+                TimezoneView.content(current),
+                view=TimezoneView(self, request_id, current=current, then=None),
+                ephemeral=True,
+            )
+            return
+
+        if row["status"] != "claimed":
+            await interaction.response.send_message(
+                f"Request #{request_id} is {row['status']}, so there is nothing to schedule.",
+                ephemeral=True,
+            )
+            return
+
+        if action == "mark":
+            await self.open_grid(interaction, row, side)
+
+        elif action == "date":
+            if not self.can_work_row(interaction.user, row):
+                await interaction.response.send_message(
+                    "Only the instructor can set the time.", ephemeral=True
+                )
+                return
+            await self.open_set_date(interaction, row)
+
+        elif action == "none":
+            if side != "trainee":
+                await interaction.response.send_message(
+                    "This one is for the trainee.", ephemeral=True
+                )
+                return
+            trainers = (await self.times_summary(request_id)).trainers or instructors_of(row)
+            await interaction.response.send_message(
+                "Told the instructor. They will mark some more hours.", ephemeral=True
+            )
+            await self.post_to_thread(
+                row,
+                f"{' '.join(f'<@{t}>' for t in trainers)} <@{row['member_id']}> cannot make "
+                "any of the hours marked so far. Add some more with **Mark my times**.",
+            )
+
+        elif action == "book":
+            if not self.can_work_row(interaction.user, row):
+                await interaction.response.send_message(
+                    "Only the instructor can book the time.", ephemeral=True
+                )
+                return
+            starts = sched.booking_starts((await self.times_summary(request_id)).both)
+            if not starts:
+                await interaction.response.send_message(
+                    "Nothing lines up yet. Start times show here once the trainee has "
+                    "picked hours the instructor is around.",
+                    ephemeral=True,
+                )
+                return
+            tz = await self.database.timezone_of(str(interaction.user.id)) or "Etc/UTC"
+            await interaction.response.send_message(
+                "When does it start?",
+                view=BookView(self, request_id, starts=starts, tz=tz),
+                ephemeral=True,
+            )
+
+    async def build_grid(
+        self, row: Any, user_id: int, side: str, tz: str, day: int
+    ) -> AvailabilityGrid | None:
+        """Someone's grid for one day, or None for a trainee with nothing to pick from."""
+        now = time.time()
+        rows = await self.database.availability(int(row["id"]))
+        mine = {
+            int(r["slot_start"]) for r in rows if r["user_id"] == str(user_id) and r["side"] == side
+        }
+        other = "trainee" if side == "trainer" else "trainer"
+        theirs = sched.upcoming(
+            sched.ranges(int(r["slot_start"]) for r in rows if r["side"] == other), now
+        )
+        if side == "trainee" and not theirs and not mine:
+            return None
+        return AvailabilityGrid(
+            self, row, user_id=user_id, side=side, tz=tz, day=day,
+            mine=mine, theirs=theirs, now=now,
+        )
+
+    async def open_grid(
+        self,
+        interaction: discord.Interaction,
+        row: Any,
+        side: str,
+        *,
+        day: int = 0,
+        edit: bool = False,
+    ) -> None:
+        """Show someone their grid, asking for their time zone first if need be."""
+        tz = await self.database.timezone_of(str(interaction.user.id))
+        if tz is None:
+            content = TimezoneView.content(None)
+            view: discord.ui.View | None = TimezoneView(
+                self, int(row["id"]), current=None, then="mark"
+            )
+        else:
+            view = await self.build_grid(row, interaction.user.id, side, tz, day)
+            content = (
+                view.content()
+                if view is not None
+                else "The instructor has not marked any hours yet. You will be pinged when they do."
+            )
+        if edit:
+            await interaction.response.edit_message(content=content, view=view)
+        elif view is not None:
+            await interaction.response.send_message(content, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(content, ephemeral=True)
+
+    async def open_set_date(
+        self, interaction: discord.Interaction, row: Any, *, edit: bool = False
+    ) -> None:
+        """Show the day, hour and minute picker, asking for a time zone first if need be."""
+        tz = await self.database.timezone_of(str(interaction.user.id))
+        if tz is None:
+            content = TimezoneView.content(None)
+            view: discord.ui.View = TimezoneView(self, int(row["id"]), current=None, then="date")
+        else:
+            view = SetDateView(self, int(row["id"]), tz=tz, now=time.time())
+            content = view.content()
+        if edit:
+            await interaction.response.edit_message(content=content, view=view)
+        else:
+            await interaction.response.send_message(content, view=view, ephemeral=True)
+
+    async def toggle_hour(
+        self, interaction: discord.Interaction, grid: AvailabilityGrid, start: int | None
+    ) -> None:
+        row = await self.database.by_id(grid.request_id)
+        if row is None or row["status"] != "claimed":
+            await interaction.response.edit_message(
+                content="This request is no longer open for scheduling.", view=None
+            )
+            return
+
+        # An hour can pass while the grid sits open; it is just redrawn as gone.
+        if start is not None and start > time.time():
+            await self.database.toggle_slot(
+                grid.request_id, user_id=str(interaction.user.id), side=grid.side, slot_start=start
+            )
+            request_id, side, actor = grid.request_id, grid.side, interaction.user.id
+            self.later(("summary", request_id), 5, lambda: self.refresh_times_message(request_id))
+            self.later(
+                ("ping", request_id, side), 60, lambda: self.announce_times(request_id, side, actor)
+            )
+        grid.stop()
+        await self.open_grid(interaction, row, grid.side, day=grid.day, edit=True)
+
+    async def show_day(
+        self, interaction: discord.Interaction, grid: AvailabilityGrid, day: int
+    ) -> None:
+        row = await self.database.by_id(grid.request_id)
+        if row is None:
+            await interaction.response.edit_message(content="This request is gone.", view=None)
+            return
+        grid.stop()
+        await self.open_grid(interaction, row, grid.side, day=day, edit=True)
+
+    async def save_timezone(
+        self, interaction: discord.Interaction, view: TimezoneView, tz: str
+    ) -> None:
+        await self.database.set_timezone(str(interaction.user.id), tz)
+        view.stop()
+        row = await self.database.by_id(view.request_id) if view.then else None
+        side = self.side_of(interaction.user, row) if row is not None else None
+        if side is not None and view.then == "mark":
+            await self.open_grid(interaction, row, side, edit=True)
+            return
+        if row is not None and view.then == "date" and self.can_work_row(interaction.user, row):
+            await self.open_set_date(interaction, row, edit=True)
+            return
+        await interaction.response.edit_message(
+            content=f"Time zone set to **{sched.zone_label(tz)}**.", view=None
+        )
+
+    async def announce_times(self, request_id: int, side: str, actor_id: int) -> None:
+        """Tell the other side, once someone has stopped marking hours."""
+        row = await self.database.by_id(request_id)
+        if row is None or row["status"] != "claimed":
+            return
+        summary = await self.times_summary(request_id)
+        if side == "trainer":
+            if not summary.trainer_free:
+                return
+            await self.post_to_thread(
+                row,
+                f"<@{row['member_id']}> <@{actor_id}> has marked when they are around. "
+                "Press **Mark my times** on the Pick a time message to pick the hours you can do.",
+            )
+            return
+
+        trainers = summary.trainers or instructors_of(row)
+        if not trainers:
+            return
+        starts = sched.booking_starts(summary.both)
+        if starts:
+            tail = (
+                f" {len(starts)} start time{'' if len(starts) == 1 else 's'} line up, the first "
+                f"<t:{starts[0]}:f>. Press **Book a time** to fix one."
+            )
+        else:
+            tail = " Nothing lines up with your hours yet."
+        await self.post_to_thread(
+            row,
+            f"{' '.join(f'<@{t}>' for t in trainers)} <@{row['member_id']}> has picked the "
+            f"hours they can do.{tail}",
+        )
+
+    async def book_time(self, interaction: discord.Interaction, request_id: int, when: int) -> None:
+        row = await self.database.by_id(request_id)
+        if row is None or not self.can_work_row(interaction.user, row):
+            await interaction.response.edit_message(
+                content="Only the instructor can book the time.", view=None
+            )
+            return
+        if when <= time.time():
+            await interaction.response.edit_message(
+                content="That time has already passed. Press **Book a time** again.", view=None
+            )
+            return
+        try:
+            updated = await self.database.book(
+                request_id, when=when, booked_by=str(interaction.user.id)
+            )
+        except TransitionError as error:
+            await interaction.response.edit_message(content=f"\N{WARNING SIGN} {error}", view=None)
+            return
+
+        await interaction.response.edit_message(content=f"Booked for <t:{when}:F>.", view=None)
+        await self.refresh_ticket(updated)
+        await self.refresh_times_message(request_id)
+        # The thread goes quiet until the reminder, so the last keep-alive
+        # bump has nothing left to do.
+        if updated["bump_message_id"] and updated["thread_id"]:
+            with contextlib.suppress(discord.HTTPException):
+                await self.clear_bump(await self.times_channel(updated), updated["bump_message_id"])
+            await self.database.set_bump_message(request_id, None)
+        people = dict.fromkeys(
+            [updated["member_id"], *instructors_of(updated), str(interaction.user.id)]
+        )
+        await self.post_to_thread(
+            updated,
+            f"\N{CALENDAR} Booked for <t:{when}:F> (<t:{when}:R>). "
+            + " ".join(f"<@{p}>" for p in people),
+        )
+
+    @tasks.loop(minutes=5)
+    async def reminder_loop(self) -> None:
+        """Ping everyone on a booked session in the hour before it starts."""
+        if self.database is None:
+            return
+        for row in await self.database.due_reminders(now=int(time.time()), within=REMIND_BEFORE):
+            when = booked_for(row)
+            people = dict.fromkeys([row["member_id"], *instructors_of(row)])
+            await self.post_to_thread(
+                row,
+                "\N{ALARM CLOCK} " + " ".join(f"<@{p}>" for p in people)
+                + f" training starts <t:{when}:R>, at <t:{when}:t>.",
+            )
+            await self.database.mark_reminded(int(row["id"]))
+
+    @reminder_loop.before_loop
+    async def before_reminder_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
     # ------------------------------------------------------------- nudges
 
     @tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=datetime.timezone.utc))
@@ -1541,6 +1956,14 @@ class CTC(commands.Cog, name="ctc"):
                 thread = self.bot.get_channel(
                     int(row["thread_id"])
                 ) or await self.bot.fetch_channel(int(row["thread_id"]))
+                # A booked session is waiting by design, and its reminder is
+                # all the thread needs. No bump; if Discord archived it in the
+                # meantime, quietly reopen it so it stays in the queue and the
+                # reminder lands in an open thread.
+                if booked_ahead(row):
+                    if getattr(thread, "archived", False):
+                        await thread.edit(archived=False)
+                    continue
                 # An archived thread is either finished or already lost; posting
                 # would silently unarchive it, so leave it be.
                 if getattr(thread, "archived", False):
@@ -1625,7 +2048,11 @@ class CTC(commands.Cog, name="ctc"):
         reads. Only the newest is kept, the same way the keep-alive bump
         replaces yesterday's: the old one is deleted after the new one lands,
         so the request is never briefly unchased.
+
+        Nothing is chased while a session is booked: the reminder covers it.
         """
+        if booked_ahead(row):
+            return False
         allowed = discord.AllowedMentions(
             roles=[discord.Object(id=i) for i in role_ids] if role_ids else False,
             users=[discord.Object(id=int(i)) for i in user_ids] if user_ids else False,
