@@ -685,12 +685,25 @@ class CTCDatabaseManager:
         if row["status"] != "claimed":
             raise TransitionError(f"Request #{request_id} is {row['status']}, not claimed.")
         await self.connection.execute(
-            "UPDATE ctc_requests SET booked_for = ?, booked_by = ?, reminded_at = NULL "
-            "WHERE id = ?",
+            "UPDATE ctc_requests SET booked_for = ?, booked_by = ?, reminded_at = NULL, "
+            "rescheduling_at = NULL WHERE id = ?",
             (int(when), str(booked_by), request_id),
         )
         await self.connection.commit()
         return await self.by_id(request_id)  # type: ignore[return-value]
+
+    async def start_reschedule(self, request_id: int) -> None:
+        """Mark a booked session as being moved, until the next booking.
+
+        The booking itself stays. Each side can be pinged once again about
+        the other's hours, as for a first booking.
+        """
+        await self.connection.execute(
+            "UPDATE ctc_requests SET rescheduling_at = datetime('now'), "
+            "trainer_times_pinged_at = NULL, trainee_times_pinged_at = NULL WHERE id = ?",
+            (request_id,),
+        )
+        await self.connection.commit()
 
     async def due_reminders(self, *, now: int, within: int) -> list[aiosqlite.Row]:
         """Claimed requests booked to start in the next ``within`` seconds, not yet reminded."""

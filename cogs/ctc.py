@@ -33,8 +33,10 @@ from ctc.config_views import ConfigRootView
 from ctc.schedule_views import (
     AvailabilityPicker,
     BookView,
+    RescheduleView,
     ScheduleButton,
     SetDateView,
+    SideChoiceView,
     TimezoneView,
     all_times_embed,
     times_embed,
@@ -110,6 +112,7 @@ LATER_COLUMNS: dict[str, dict[str, str]] = {
         "trainee_times_pinged_at": "TEXT",
         "times_note_ids": "TEXT",
         "booked_message_id": "TEXT",
+        "rescheduling_at": "TEXT",
     },
     "ctc_panels": {"unit": "TEXT"},
 }
@@ -144,6 +147,9 @@ CLOSED_PREFIX = "CLOSED: "
 
 #: Discord's hard limit on a thread name.
 MAX_THREAD_NAME = 100
+
+#: Marks a reschedule, on the card button and in the thread.
+RESCHEDULE_EMOJI = "\N{CLOCKWISE RIGHTWARDS AND LEFTWARDS OPEN CIRCLE ARROWS}"
 
 #: How long before a booked session everyone on it is pinged, in seconds.
 REMIND_BEFORE = 3600
@@ -182,6 +188,15 @@ def booked_ahead(row: Any, now: float | None = None) -> bool:
     """
     when = booked_for(row)
     return when is not None and when > (time.time() if now is None else now)
+
+
+def rescheduling(row: Any) -> bool:
+    """True while a booked session is being moved: a reason has been given
+    and no new time is booked yet. Read defensively, like ``booked_for``."""
+    try:
+        return bool(row["rescheduling_at"])
+    except (KeyError, IndexError):
+        return False
 
 
 def bump_due(last: str | None, thread: Any, days: int) -> bool:
@@ -1237,10 +1252,15 @@ class CTC(commands.Cog, name="ctc"):
             allowed = self.can_work(unit, interaction.user, row["badge_key"])
         elif action == "guest":
             allowed = self.is_guest_instructor(unit, interaction.user)
+        elif action in ("times", "resched"):
+            # Scheduling is for the people on the request, trainee included.
+            allowed = self.side_of(interaction.user, row) is not None
         else:
             allowed = own_cancel or self.can_work_row(interaction.user, row)
         if not allowed:
-            if action == "guest":
+            if action in ("times", "resched"):
+                denied = "This is for the trainee and the TI on this request (or its Guest TI)."
+            elif action == "guest":
                 denied = "Only Guest TIs can take the Guest TI seat."
             elif action == "claim" and self.is_guest_instructor(unit, interaction.user):
                 denied = "Only Training Instructors can do that. Use **Claim as Guest TI** instead."
@@ -1259,24 +1279,37 @@ class CTC(commands.Cog, name="ctc"):
             )
             return
 
-        if action == "times":
-            if not self.is_seated(interaction.user, row):
+        if action in ("times", "date", "resched"):
+            side = self.side_of(interaction.user, row)
+            seated = self.is_seated(interaction.user, row)
+            when = booked_for(row)
+            if when:
+                # A booked session only moves with a reason, whichever
+                # button was pressed, so a stale card cannot skip it.
+                if side is None:
+                    await interaction.response.send_message(SEATED_ONLY, ephemeral=True)
+                    return
                 await interaction.response.send_message(
-                    "Only the TI on this request (or its Guest TI) can start Pick a time.",
+                    RescheduleView.content(when),
+                    view=RescheduleView(self, request_id, can_set=seated),
                     ephemeral=True,
                 )
-                return
-            # Answer first: posting the shared message is a second request to
-            # Discord, and the press has to be answered within three seconds.
-            await self.open_grid(interaction, row, "trainer")
-            await self.ensure_times_message(row)
-            return
-
-        if action == "date":
-            if not self.is_seated(interaction.user, row):
-                await interaction.response.send_message(SEATED_ONLY, ephemeral=True)
-                return
-            await self.open_set_date(interaction, row)
+            elif action == "resched":
+                await interaction.response.send_message(
+                    "Nothing is booked on this request any more.", ephemeral=True
+                )
+                await self.refresh_ticket(row)
+            elif action == "date":
+                if not seated:
+                    await interaction.response.send_message(SEATED_ONLY, ephemeral=True)
+                    return
+                await self.open_set_date(interaction, row)
+            else:
+                # Answer first: posting the shared message is a second request
+                # to Discord, and the press has to be answered within three
+                # seconds.
+                await self.open_tool(interaction, row)
+                await self.ensure_times_message(row)
             return
 
         if action == "assign":
@@ -1594,6 +1627,43 @@ class CTC(commands.Cog, name="ctc"):
             return "trainer"
         return None
 
+    def sides_of(self, user: discord.abc.User, row: Any) -> list[str]:
+        """Every side someone is on. Usually one; both when a TI has claimed
+        their own request."""
+        sides = []
+        if str(user.id) == row["member_id"]:
+            sides.append("trainee")
+        if self.is_seated(user, row):
+            sides.append("trainer")
+        return sides
+
+    async def open_tool(
+        self, interaction: discord.Interaction, row: Any, *, edit: bool = False
+    ) -> None:
+        """Open someone's hour lists, asking which side first if they are on both."""
+        sides = self.sides_of(interaction.user, row)
+        if len(sides) < 2:
+            await self.open_grid(interaction, row, sides[0], edit=edit)
+            return
+        view = SideChoiceView(self, int(row["id"]))
+        if edit:
+            await interaction.response.edit_message(content=view.CONTENT, view=view)
+        else:
+            await interaction.response.send_message(view.CONTENT, view=view, ephemeral=True)
+
+    async def choose_side(
+        self, interaction: discord.Interaction, request_id: int, side: str
+    ) -> None:
+        row = await self.database.by_id(request_id)
+        if row is None or row["status"] != "claimed" or side not in self.sides_of(
+            interaction.user, row
+        ):
+            await interaction.response.edit_message(
+                content="This request is no longer open for you to schedule.", view=None
+            )
+            return
+        await self.open_grid(interaction, row, side, edit=True)
+
     async def marked_hours(self, row: Any) -> list[Any]:
         """The hours that count: the trainee's, and those of whoever is seated
         on the request now. Hours left by an instructor who has since been
@@ -1743,7 +1813,7 @@ class CTC(commands.Cog, name="ctc"):
             return
 
         if action == "mark":
-            await self.open_grid(interaction, row, side)
+            await self.open_tool(interaction, row)
 
         elif action == "hours":
             await interaction.response.send_message(
@@ -1861,6 +1931,56 @@ class CTC(commands.Cog, name="ctc"):
         else:
             await interaction.response.send_message(content, view=view, ephemeral=True)
 
+    async def start_reschedule(
+        self, interaction: discord.Interaction, request_id: int, mode: str, reason: str
+    ) -> None:
+        """A reason has been given: say so in the thread, then open the
+        schedule tool (``mode`` "tool") or the Set a Time/Date picker ("date").
+
+        The current booking stays until a new time is booked, so the thread
+        keeps quiet and the reminder holds if the move is never finished.
+        """
+        row = await self.database.by_id(request_id)
+        side = self.side_of(interaction.user, row) if row is not None else None
+        if (
+            row is None
+            or row["status"] != "claimed"
+            or side is None
+            or (mode == "date" and not self.is_seated(interaction.user, row))
+        ):
+            await interaction.response.edit_message(
+                content="This request is no longer open for you to schedule.", view=None
+            )
+            return
+
+        await self.database.start_reschedule(request_id)
+        if mode == "date":
+            await self.open_set_date(interaction, row, edit=True)
+        else:
+            await self.open_tool(interaction, row, edit=True)
+
+        if not (row["thread_id"] or row["queue_channel_id"]):
+            return
+        when = booked_for(row)
+        people = dict.fromkeys([row["member_id"], *instructors_of(row)])
+        try:
+            await (await self.times_channel(row)).send(
+                f"{RESCHEDULE_EMOJI} <@{interaction.user.id}> is rescheduling this session"
+                + (f" (booked for <t:{when}:F>)" if when else "")
+                + f".\n**Reason:** {reason.strip()}\n"
+                + " ".join(f"<@{p}>" for p in people),
+                # The reason is free text: it must not be able to ping anyone.
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=False,
+                    roles=False,
+                    users=[discord.Object(id=int(p)) for p in people],
+                ),
+            )
+        except discord.HTTPException as error:
+            self.bot.logger.warning(f"CTC: could not announce reschedule of #{request_id}: {error}")
+        if mode != "date":
+            await self.ensure_times_message(await self.database.by_id(request_id))
+
     async def save_day(
         self,
         interaction: discord.Interaction,
@@ -1874,7 +1994,7 @@ class CTC(commands.Cog, name="ctc"):
         if (
             row is None
             or row["status"] != "claimed"
-            or self.side_of(interaction.user, row) != picker.side
+            or picker.side not in self.sides_of(interaction.user, row)
         ):
             await interaction.response.edit_message(
                 content="This request is no longer open for you to schedule.", view=None
@@ -1919,7 +2039,7 @@ class CTC(commands.Cog, name="ctc"):
         row = await self.database.by_id(view.request_id) if view.then else None
         side = self.side_of(interaction.user, row) if row is not None else None
         if side is not None and view.then == "mark":
-            await self.open_grid(interaction, row, side, edit=True)
+            await self.open_tool(interaction, row, edit=True)
             return
         if row is not None and view.then == "date" and self.is_seated(interaction.user, row):
             await self.open_set_date(interaction, row, edit=True)
@@ -1943,7 +2063,8 @@ class CTC(commands.Cog, name="ctc"):
         if row is None or row["status"] != "claimed" or row[f"{side}_times_pinged_at"]:
             return
         summary = await self.times_summary(request_id)
-        answered = booked_ahead(row) or (side == "trainer" and summary.trainee_free)
+        settled = booked_ahead(row) and not rescheduling(row)
+        answered = settled or (side == "trainer" and summary.trainee_free)
         if answered:
             await self.database.mark_times_pinged(request_id, side)
             return
@@ -1953,7 +2074,7 @@ class CTC(commands.Cog, name="ctc"):
             await self.post_times_note(
                 row,
                 f"<@{row['member_id']}> <@{actor_id}> has marked when they are around. "
-                "Press **Mark my times** on the Pick a time message to pick the hours you can do.",
+                "Press **Mark my times** on the schedule message to pick the hours you can do.",
             )
             await self.database.mark_times_pinged(request_id, side)
             return
@@ -1967,8 +2088,10 @@ class CTC(commands.Cog, name="ctc"):
                 f" {len(starts)} start time{'' if len(starts) == 1 else 's'} line up, the first "
                 f"<t:{starts[0]}:f>. Press **Book a time** to fix one."
             )
-        else:
+        elif summary.trainer_free:
             tail = " Nothing lines up with your hours yet."
+        else:
+            tail = " Press **Mark my times** on the schedule message to add yours."
         await self.post_times_note(
             row,
             f"{' '.join(f'<@{t}>' for t in trainers)} <@{row['member_id']}> has picked the "

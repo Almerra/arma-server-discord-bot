@@ -396,24 +396,23 @@ On a private thread, give the Guest TI role Manage Threads on the queue channel
 (as instructors have) or they will not see cards to claim. Seating someone
 through **Assign…** adds them to the thread either way.
 
-## Picking a time
+## Scheduling a session
 
-**Pick a time** on a claimed card posts a shared message in the request's
-thread and opens the instructor's hour lists. Everything after that happens from
-the shared message:
+**Open Schedule Tool** on a claimed card posts a shared message in the
+request's thread and opens the presser's hour lists. Everything after that
+happens from the shared message:
 
 - Only the request's own TI, its Guest TI and the trainee take part. Other
   instructors are refused, and hours left by an instructor who has since been
-  released or reassigned stop counting. **Pick a time** on the card is for the
-  TI or Guest TI; the trainee joins from the shared message.
+  released or reassigned stop counting.
+- Either side can go first: the trainee or the TI can open the tool and mark
+  hours before the other has.
 - **Mark my times** opens a private set of lists, one per day for the next 7
   days, labelled on your own clock. Open a day, tick every hour, and click
   outside the list: the whole day saves at once. Four days fit on a page, with
   a button for the rest.
-- The instructor is offered every hour still to come, with the ones the trainee
-  can already do marked. The trainee is only offered hours an instructor is
-  around, so days with none are left out. A TI's and a Guest TI's hours are
-  pooled.
+- Both sides are offered every hour still to come, with the other side's hours
+  marked once there are some. A TI's and a Guest TI's hours are pooled.
 - The shared message stays short: how many hours each side has marked, and the
   next five times both are free (or the booked time, once there is one). Those
   times are Discord timestamps, so each reader sees their own local time.
@@ -421,8 +420,9 @@ the shared message:
   on their own clock.
 - Each side is pinged once per request, five minutes after the other's last
   tap: the trainee the first time the instructor has marked hours, the
-  instructor the first time the trainee has picked theirs. Later changes update
-  the shared message without pinging anyone.
+  instructor the first time the trainee has picked theirs (to book, or to add
+  their own hours if the trainee went first). Later changes update the shared
+  message without pinging anyone.
 - A ping that would ask for something already done is skipped: no ping to the
   trainee if they have already picked hours, none to the instructor if the
   session is already booked.
@@ -431,7 +431,7 @@ the shared message:
   time. Only the request's own TI or Guest TI can book. The booked time goes on
   the card and the shared message, and everyone on the request is pinged about
   an hour before.
-- **Set a date**, on the card and on the shared message, books a time agreed
+- **Set a Time/Date**, on the card and on the shared message, books a time agreed
   without the lists: pick the day (next 25 days), hour and minute on your own
   clock. It books exactly like **Book a time**, with the same rule: only the
   request's own TI or Guest TI, never the trainee or another instructor.
@@ -442,8 +442,16 @@ the shared message:
   has passed, bumps and chase-ups carry on as before.
 - Once a time is booked, the shared message and the pings that led up to it
   are deleted, leaving the card's Booked line and one "Booked for" message. A
-  rebooking replaces that message. To move a session, use **Set a date** on the
-  card, or **Pick a time** for a fresh shared message.
+  rebooking replaces that message.
+- Once a time is booked, the card's two scheduling buttons become one:
+  **Reschedule**. It offers **Open Schedule Tool** (TI, Guest TI or trainee) or
+  **Schedule a new Time/Date** (TI or Guest TI), and either asks for a reason
+  first. The reason is posted in the thread with who asked, and pings everyone
+  on the request. The schedule tool opens with the hours marked before, minus
+  any that have passed.
+- The current booking stays until a new time is booked, so the thread keeps
+  quiet and the reminder holds if a reschedule is never finished. While one is
+  under way, each side can be pinged once more about the other's hours.
 - **My time zone** changes it. Discord never tells a bot where someone is, so
   each person picks once, the first time they open their hours, and it is
   remembered for every request.

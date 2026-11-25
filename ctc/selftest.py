@@ -835,7 +835,7 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
                 (
                     "claimed",
                     [
-                        "All passed", "Partial", "Pick a time", "Set a date", "Release",
+                        "All passed", "Partial", "Open Schedule Tool", "Set a Time/Date", "Release",
                         f"Reassign{ellipsis}", "Cancel",
                     ],
                 ),
@@ -856,8 +856,8 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             view = ticket_view(CAT, row)
             assert labels(view) == [
                 "Record result",
-                "Pick a time",
-                "Set a date",
+                "Open Schedule Tool",
+                "Set a Time/Date",
                 "Release",
                 "Reassign…",
                 "Cancel",
@@ -1079,6 +1079,14 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             assert not await db.due_reminders(now=97_000, within=3600), "reminded only once"
             r = await db.book(rid, when=200_000, booked_by="ti1")
             assert r["reminded_at"] is None, "rebooking re-arms the reminder"
+
+            await db.mark_times_pinged(rid, "trainer")
+            await db.start_reschedule(rid)
+            r = await db.by_id(rid)
+            assert r["rescheduling_at"] and r["booked_for"] == 200_000, "the booking stays"
+            assert r["trainer_times_pinged_at"] is None, "each side can be pinged once more"
+            r = await db.book(rid, when=300_000, booked_by="ti1")
+            assert r["rescheduling_at"] is None, "a new booking ends the reschedule"
 
         async def cards_show_both_seats():
             row = dict(await db.by_id(await new_request("g6")))
@@ -2303,11 +2311,15 @@ def _() -> None:
     assert "UK" in trainer.content() and "<@5>" in trainer.content()
 
     trainee = picker("trainee", theirs=[(hours[19], hours[21])])
-    (only,) = selects(trainee)
-    assert [o.label for o in only.options] == ["19:00", "20:00"], "only instructor hours"
-    assert not any(o.description for o in only.options)
-    assert not buttons(trainee), "one page needs no paging button"
-    assert not picker("trainee").days, "nothing to offer before the instructor marks hours"
+    today = selects(trainee)[0]
+    assert len(today.options) == 11, "either side can go first, so every hour is offered"
+    assert [o.label for o in today.options if o.description == "Instructor is around"] == [
+        "19:00", "20:00"
+    ]
+    first = picker("trainee")  # before the instructor has marked anything
+    assert len(selects(first)) == 4 and not any(
+        o.description for o in selects(first)[0].options
+    )
 
 
 @check("schedule buttons survive a restart and do not collide with tickets")
@@ -2316,6 +2328,7 @@ def _() -> None:
 
     schedule = ScheduleButton.__discord_ui_compiled_template__
     ticket = TicketButton.__discord_ui_compiled_template__
+    assert ticket.fullmatch("ctc:resched:42")
     for action in ("mark", "book", "date", "none", "zone", "hours"):
         assert schedule.fullmatch(f"ctcsched:{action}:42")
         assert not ticket.fullmatch(f"ctcsched:{action}:42")
@@ -2359,7 +2372,7 @@ def _() -> None:
     assert full.fields[0].value.startswith("**Thu 1 Jan** · 00:00-01:00, 02:00-03:00")
     assert "<t:" in all_times_embed(row, sched.Summary([], many, [], []), None).fields[0].value
     assert labels(times_view(7)) == [
-        "Mark my times", "Book a time", "Set a date", "None of these work", "My time zone",
+        "Mark my times", "Book a time", "Set a Time/Date", "None of these work", "My time zone",
         "All times",
     ]
 
@@ -2444,7 +2457,7 @@ def _() -> None:
     # No ping for something already done by the time the wait is over.
     def fresh(**extra):
         row.update({"trainer_times_pinged_at": None, "trainee_times_pinged_at": None,
-                    "booked_for": None, **extra})
+                    "booked_for": None, "rescheduling_at": None, **extra})
         posted.clear()
 
     fresh()  # the trainee picked hours before the instructor's ping was due
@@ -2459,6 +2472,18 @@ def _() -> None:
     fresh(booked_for=future)
     asyncio.run(cog.announce_times(9, "trainer", 10))
     assert not posted, "already booked: the trainee is not asked to pick hours"
+
+    # While a booked session is being moved, pings are live again.
+    marked.append({"user_id": "5", "side": "trainee", "slot_start": future})
+    fresh(booked_for=future, rescheduling_at="now")
+    asyncio.run(cog.announce_times(9, "trainee", 5))
+    assert len(posted) == 1 and "line up" in posted[0], "rescheduling: the TI is told"
+
+    # The trainee can go first: the TI is asked to add their own hours.
+    del marked[0]
+    fresh()
+    asyncio.run(cog.announce_times(9, "trainee", 5))
+    assert len(posted) == 1 and posted[0].endswith("to add yours."), posted
 
     from cogs.ctc import PING_AFTER
 
@@ -2508,7 +2533,7 @@ def _() -> None:
     assert cleared == [7]
 
 
-@check("only the request's TI, Guest TI and trainee take part in Pick a time")
+@check("only the request's TI, Guest TI and trainee take part in scheduling")
 def _() -> None:
     from types import SimpleNamespace
 
@@ -2563,13 +2588,172 @@ def _() -> None:
 
     assert press(10, "handle_ticket_action", "times") == ([], ["trainer"])
     assert press(20, "handle_ticket_action", "times") == ([], ["trainer"])
+    assert press(5, "handle_ticket_action", "times") == ([], ["trainee"]), "trainee can start"
     sent, opened = press(30, "handle_ticket_action", "times")
-    assert not opened and "Only the TI on this request" in sent[0], "card: other instructor"
+    assert not opened and sent[0].startswith("This is for the trainee and the TI")
 
     assert press(5, "handle_schedule_action", "mark") == ([], ["trainee"])
     assert press(10, "handle_schedule_action", "mark") == ([], ["trainer"])
     sent, opened = press(30, "handle_schedule_action", "mark")
     assert not opened and sent[0].startswith("This is for the trainee and the TI")
+
+
+@check("someone who is both trainee and TI is asked which side they are marking")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+    from ctc.schedule_views import SideChoiceView
+
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "10",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20"}
+    asked: list = []
+    opened: list[str] = []
+
+    async def by_id(_rid):
+        return dict(row)
+
+    async def send_message(content, view=None, **_):
+        asked.append(view)
+
+    async def edit_message(content=None, view=None, **_):
+        asked.append(content)
+
+    async def open_grid(_i, _row, side, **_):
+        opened.append(side)
+
+    cog = CTC.__new__(CTC)
+    cog.database = SimpleNamespace(by_id=by_id)
+    cog.open_grid = open_grid
+
+    def interaction(uid):
+        return SimpleNamespace(
+            user=SimpleNamespace(id=uid),
+            response=SimpleNamespace(send_message=send_message, edit_message=edit_message),
+        )
+
+    assert cog.sides_of(interaction(10).user, row) == ["trainee", "trainer"]
+    asyncio.run(cog.open_tool(interaction(10), row))
+    assert not opened and isinstance(asked[0], SideChoiceView)
+    assert labels(asked[0]) == ["As instructor", "As trainee"]
+
+    asyncio.run(cog.choose_side(interaction(10), 9, "trainer"))
+    asyncio.run(cog.choose_side(interaction(10), 9, "trainee"))
+    assert opened == ["trainer", "trainee"]
+
+    asyncio.run(cog.open_tool(interaction(20), row))
+    assert opened[-1] == "trainer" and len(asked) == 1, "one side: straight in, no question"
+
+    asyncio.run(cog.choose_side(interaction(20), 9, "trainee"))
+    assert opened[-1] == "trainer" and "no longer open" in asked[-1], "cannot pick a side you lack"
+
+
+@check("a booked session moves through Reschedule, with a reason")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC, SEATED_ONLY
+    from ctc.schedule_views import ReasonModal, RescheduleView
+
+    when = 4_000_000_000
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "levels": None, "member_id": "5",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": None,
+           "booked_for": when, "thread_id": "50", "queue_channel_id": "60",
+           "times_message_id": "70"}
+
+    # The card swaps its two scheduling buttons for one.
+    booked = labels(ticket_view(CAT, row))
+    assert "Reschedule" in booked and not {"Open Schedule Tool", "Set a Time/Date"} & set(booked)
+    assert "Reschedule" not in labels(ticket_view(CAT, {**row, "booked_for": None}))
+
+    reason = ReasonModal(None, 9, "tool").reason
+    assert reason.required and reason.min_length == 5, "a reason cannot be skipped"
+
+    sent: list[tuple] = []
+    opened: list[str] = []
+    started: list[int] = []
+    current = dict(row)
+
+    class Channel:
+        async def send(self, content, **kwargs):
+            sent.append((content, kwargs.get("allowed_mentions")))
+
+    class Response:
+        def __init__(self):
+            self.said: list = []
+
+        async def send_message(self, content, view=None, **_):
+            self.said.append((content, view))
+
+        async def edit_message(self, content=None, **_):
+            self.said.append((content, None))
+
+    async def by_id(_rid):
+        return dict(current)
+
+    async def start_reschedule(rid):
+        started.append(rid)
+
+    async def open_grid(_i, _row, side, **_):
+        opened.append(f"tool:{side}")
+
+    async def open_set_date(_i, _row, **_):
+        opened.append("date")
+
+    async def ensure_times_message(_row):
+        opened.append("panel")
+
+    async def refresh_ticket(_row):
+        pass
+
+    cog = CTC.__new__(CTC)
+    cog.units = Units({}, DEFAULTS)  # no roles set: everyone counts as an instructor
+    cog.database = SimpleNamespace(by_id=by_id, start_reschedule=start_reschedule)
+    cog.bot = SimpleNamespace(get_channel=lambda _cid: Channel(),
+                              logger=SimpleNamespace(warning=lambda _m: None))
+    cog.open_grid, cog.open_set_date = open_grid, open_set_date
+    cog.ensure_times_message, cog.refresh_ticket = ensure_times_message, refresh_ticket
+
+    def act(uid, method, *args):
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=uid, display_name="x"), response=Response()
+        )
+        asyncio.run(getattr(cog, method)(interaction, *args))
+        return interaction.response.said
+
+    # Any scheduling button on a booked card leads to the reason, never past it.
+    for action in ("resched", "times", "date"):
+        ((content, view),) = act(10, "handle_ticket_action", action, 9)
+        assert isinstance(view, RescheduleView) and f"<t:{when}:F>" in content, action
+        assert labels(view) == ["Open Schedule Tool", "Schedule a new Time/Date"]
+    ((_, view),) = act(5, "handle_ticket_action", "resched", 9)
+    assert labels(view) == ["Open Schedule Tool"], "the trainee cannot set a time directly"
+    ((content, view),) = act(30, "handle_ticket_action", "resched", 9)
+    assert view is None, "another instructor cannot reschedule"
+    assert not opened and not started, "nothing opens before a reason is given"
+
+    # The reason is posted for everyone on the request, and cannot ping anyone else.
+    act(5, "start_reschedule", 9, "tool", "  Away that @everyone weekend ")
+    assert started == [9] and opened == ["tool:trainee", "panel"]
+    ((content, mentions),) = sent
+    assert "<@5> is rescheduling" in content and f"<t:{when}:F>" in content
+    assert "**Reason:** Away that @everyone weekend" in content
+    assert mentions.everyone is False and mentions.roles is False
+    assert sorted(u.id for u in mentions.users) == [5, 10]
+
+    opened.clear()
+    act(10, "start_reschedule", 9, "date", "Server maintenance")
+    assert opened == ["date"], "straight to the picker, no shared message"
+
+    started.clear()
+    said = act(5, "start_reschedule", 9, "date", "trying to set it myself")
+    assert not started and "no longer open" in said[0][0], "trainee cannot take the date route"
+
+    current["booked_for"] = None  # a stale Reschedule button
+    ((content, view),) = act(10, "handle_ticket_action", "resched", 9)
+    assert content.startswith("Nothing is booked") and view is None
+    ((content, _),) = act(5, "handle_ticket_action", "date", 9)
+    assert content == SEATED_ONLY, "unbooked: Set a Time/Date is still TI only"
 
 
 @check("only the request's TI or Guest TI can Book a time")
