@@ -31,7 +31,7 @@ from ctc import catalogue as catalogue_module
 from ctc import schedule as sched
 from ctc.config_views import ConfigRootView
 from ctc.schedule_views import (
-    AvailabilityGrid,
+    AvailabilityPicker,
     BookView,
     ScheduleButton,
     SetDateView,
@@ -1260,6 +1260,12 @@ class CTC(commands.Cog, name="ctc"):
             return
 
         if action == "times":
+            if not self.is_seated(interaction.user, row):
+                await interaction.response.send_message(
+                    "Only the TI on this request (or its Guest TI) can start Pick a time.",
+                    ephemeral=True,
+                )
+                return
             # Answer first: posting the shared message is a second request to
             # Discord, and the press has to be answered within three seconds.
             await self.open_grid(interaction, row, "trainer")
@@ -1579,15 +1585,29 @@ class CTC(commands.Cog, name="ctc"):
         return str(user.id) in instructors_of(row)
 
     def side_of(self, user: discord.abc.User, row: Any) -> str | None:
-        """``trainee`` for the member who asked, ``trainer`` for anyone who can work it."""
+        """``trainee`` for the member who asked, ``trainer`` for the request's
+        own TI or Guest TI. Nobody else takes part, other instructors included.
+        """
         if str(user.id) == row["member_id"]:
             return "trainee"
-        if self.can_work_row(user, row):
+        if self.is_seated(user, row):
             return "trainer"
         return None
 
+    async def marked_hours(self, row: Any) -> list[Any]:
+        """The hours that count: the trainee's, and those of whoever is seated
+        on the request now. Hours left by an instructor who has since been
+        released or reassigned are ignored.
+        """
+        seated = instructors_of(row)
+        return [
+            r for r in await self.database.availability(int(row["id"]))
+            if r["side"] == "trainee" or r["user_id"] in seated
+        ]
+
     async def times_summary(self, request_id: int) -> sched.Summary:
-        return sched.summarise(await self.database.availability(request_id), time.time())
+        row = await self.database.by_id(request_id)
+        return sched.summarise(await self.marked_hours(row) if row else [], time.time())
 
     async def times_channel(self, row: Any) -> Any:
         channel_id = int(row["thread_id"] or row["queue_channel_id"])
@@ -1701,7 +1721,8 @@ class CTC(commands.Cog, name="ctc"):
         side = self.side_of(interaction.user, row)
         if side is None:
             await interaction.response.send_message(
-                "This is for the trainee and the instructors on this request.", ephemeral=True
+                "This is for the trainee and the TI on this request (or its Guest TI).",
+                ephemeral=True,
             )
             return
 
@@ -1776,11 +1797,11 @@ class CTC(commands.Cog, name="ctc"):
             )
 
     async def build_grid(
-        self, row: Any, user_id: int, side: str, tz: str, day: int
-    ) -> AvailabilityGrid | None:
-        """Someone's grid for one day, or None for a trainee with nothing to pick from."""
+        self, row: Any, user_id: int, side: str, tz: str, page: int
+    ) -> AvailabilityPicker | None:
+        """Someone's hour lists, or None for a trainee with nothing to pick from."""
         now = time.time()
-        rows = await self.database.availability(int(row["id"]))
+        rows = await self.marked_hours(row)
         mine = {
             int(r["slot_start"]) for r in rows if r["user_id"] == str(user_id) and r["side"] == side
         }
@@ -1788,12 +1809,11 @@ class CTC(commands.Cog, name="ctc"):
         theirs = sched.upcoming(
             sched.ranges(int(r["slot_start"]) for r in rows if r["side"] == other), now
         )
-        if side == "trainee" and not theirs and not mine:
-            return None
-        return AvailabilityGrid(
-            self, row, user_id=user_id, side=side, tz=tz, day=day,
+        picker = AvailabilityPicker(
+            self, row, user_id=user_id, side=side, tz=tz, page=page,
             mine=mine, theirs=theirs, now=now,
         )
+        return picker if picker.days else None
 
     async def open_grid(
         self,
@@ -1801,10 +1821,10 @@ class CTC(commands.Cog, name="ctc"):
         row: Any,
         side: str,
         *,
-        day: int = 0,
+        page: int = 0,
         edit: bool = False,
     ) -> None:
-        """Show someone their grid, asking for their time zone first if need be."""
+        """Show someone their hour lists, asking for their time zone first if need be."""
         tz = await self.database.timezone_of(str(interaction.user.id))
         if tz is None:
             content = TimezoneView.content(None)
@@ -1812,7 +1832,7 @@ class CTC(commands.Cog, name="ctc"):
                 self, int(row["id"]), current=None, then="mark"
             )
         else:
-            view = await self.build_grid(row, interaction.user.id, side, tz, day)
+            view = await self.build_grid(row, interaction.user.id, side, tz, page)
             content = (
                 view.content()
                 if view is not None
@@ -1841,40 +1861,55 @@ class CTC(commands.Cog, name="ctc"):
         else:
             await interaction.response.send_message(content, view=view, ephemeral=True)
 
-    async def toggle_hour(
-        self, interaction: discord.Interaction, grid: AvailabilityGrid, start: int | None
+    async def save_day(
+        self,
+        interaction: discord.Interaction,
+        picker: AvailabilityPicker,
+        offered: Sequence[int],
+        chosen: Sequence[int],
     ) -> None:
-        row = await self.database.by_id(grid.request_id)
-        if row is None or row["status"] != "claimed":
+        """Save one day's list: of the hours it offered, exactly the ticked ones."""
+        row = await self.database.by_id(picker.request_id)
+        # Checked again here: the seats can change while the lists sit open.
+        if (
+            row is None
+            or row["status"] != "claimed"
+            or self.side_of(interaction.user, row) != picker.side
+        ):
             await interaction.response.edit_message(
-                content="This request is no longer open for scheduling.", view=None
+                content="This request is no longer open for you to schedule.", view=None
             )
             return
 
-        # An hour can pass while the grid sits open; it is just redrawn as gone.
-        if start is not None and start > time.time():
-            await self.database.toggle_slot(
-                grid.request_id, user_id=str(interaction.user.id), side=grid.side, slot_start=start
-            )
-            request_id, side, actor = grid.request_id, grid.side, interaction.user.id
+        # An hour can pass while the list sits open; it is left as it was.
+        now = time.time()
+        changed = await self.database.set_slots(
+            picker.request_id,
+            user_id=str(interaction.user.id),
+            side=picker.side,
+            offered=[start for start in offered if start > now],
+            chosen=chosen,
+        )
+        if changed:
+            request_id, side, actor = picker.request_id, picker.side, interaction.user.id
             self.later(("summary", request_id), 5, lambda: self.refresh_times_message(request_id))
             self.later(
                 ("ping", request_id, side),
                 PING_AFTER,
                 lambda: self.announce_times(request_id, side, actor),
             )
-        grid.stop()
-        await self.open_grid(interaction, row, grid.side, day=grid.day, edit=True)
+        picker.stop()
+        await self.open_grid(interaction, row, picker.side, page=picker.page, edit=True)
 
-    async def show_day(
-        self, interaction: discord.Interaction, grid: AvailabilityGrid, day: int
+    async def show_page(
+        self, interaction: discord.Interaction, picker: AvailabilityPicker, page: int
     ) -> None:
-        row = await self.database.by_id(grid.request_id)
+        row = await self.database.by_id(picker.request_id)
         if row is None:
             await interaction.response.edit_message(content="This request is gone.", view=None)
             return
-        grid.stop()
-        await self.open_grid(interaction, row, grid.side, day=day, edit=True)
+        picker.stop()
+        await self.open_grid(interaction, row, picker.side, page=page, edit=True)
 
     async def save_timezone(
         self, interaction: discord.Interaction, view: TimezoneView, tz: str

@@ -399,16 +399,21 @@ through **Assign…** adds them to the thread either way.
 ## Picking a time
 
 **Pick a time** on a claimed card posts a shared message in the request's
-thread and opens the instructor's hour grid. Everything after that happens from
+thread and opens the instructor's hour lists. Everything after that happens from
 the shared message:
 
-- **Mark my times** opens a private grid: the 24 hours of one day, labelled on
-  your own clock, with a button to step through the next 7 days. Tap an hour to
-  mark it, tap again to clear it. Each tap saves.
-- The instructor can mark any hour; the trainee's hours show in blue. The
-  trainee can only pick hours an instructor is around (blue); the rest are
-  greyed out. Hours both have marked get a tick. A TI's and a Guest TI's hours
-  are pooled.
+- Only the request's own TI, its Guest TI and the trainee take part. Other
+  instructors are refused, and hours left by an instructor who has since been
+  released or reassigned stop counting. **Pick a time** on the card is for the
+  TI or Guest TI; the trainee joins from the shared message.
+- **Mark my times** opens a private set of lists, one per day for the next 7
+  days, labelled on your own clock. Open a day, tick every hour, and click
+  outside the list: the whole day saves at once. Four days fit on a page, with
+  a button for the rest.
+- The instructor is offered every hour still to come, with the ones the trainee
+  can already do marked. The trainee is only offered hours an instructor is
+  around, so days with none are left out. A TI's and a Guest TI's hours are
+  pooled.
 - The shared message stays short: how many hours each side has marked, and the
   next five times both are free (or the booked time, once there is one). Those
   times are Discord timestamps, so each reader sees their own local time.
@@ -427,7 +432,7 @@ the shared message:
   the card and the shared message, and everyone on the request is pinged about
   an hour before.
 - **Set a date**, on the card and on the shared message, books a time agreed
-  without the grid: pick the day (next 25 days), hour and minute on your own
+  without the lists: pick the day (next 25 days), hour and minute on your own
   clock. It books exactly like **Book a time**, with the same rule: only the
   request's own TI or Guest TI, never the trainee or another instructor.
   Booking is always done by a person: nothing is booked automatically.
@@ -440,12 +445,12 @@ the shared message:
   rebooking replaces that message. To move a session, use **Set a date** on the
   card, or **Pick a time** for a fresh shared message.
 - **My time zone** changes it. Discord never tells a bot where someone is, so
-  each person picks once, the first time they open a grid, and it is
+  each person picks once, the first time they open their hours, and it is
   remembered for every request.
 
 Hours are stored as the Unix time they start, so the two sides line up whatever
 their zones, half-hour zones included. Clock changes are handled; the hour a
-clock change skips shows greyed out.
+clock change skips is left out of the list.
 
 On Windows, Python has no built-in time zone list: the bot needs the `tzdata`
 package (in `requirements.txt`) installed where the service's Python can see

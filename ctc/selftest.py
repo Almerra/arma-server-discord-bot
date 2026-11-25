@@ -1043,6 +1043,20 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             rows = await db.availability(rid)
             assert [(r["user_id"], r["slot_start"]) for r in rows] == [("ti1", 10800)]
 
+            # A day's list saves as a whole: of the hours offered, exactly the ticked ones.
+            day = [3600, 7200, 10800]
+            assert await db.set_slots(rid, user_id="ti1", side="trainer", offered=day,
+                                      chosen=[3600, 7200])
+            assert not await db.set_slots(rid, user_id="ti1", side="trainer", offered=day,
+                                          chosen=[7200, 3600]), "same again: no change"
+            await db.set_slots(rid, user_id="ti1", side="trainer", offered=[90000],
+                               chosen=[90000, 123456])
+            marked = [r["slot_start"] for r in await db.availability(rid)]
+            assert marked == [3600, 7200, 90000], "other days untouched, unoffered ignored"
+            await db.set_slots(rid, user_id="ti1", side="trainer", offered=day + [90000], chosen=[])
+            assert not await db.availability(rid), "unticking everything clears the day"
+            await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=10800)
+
             assert await db.timezone_of("u1") is None
             await db.set_timezone("u1", "Europe/London")
             await db.set_timezone("u1", "America/Chicago")
@@ -2253,42 +2267,47 @@ def _() -> None:
     assert summary.both == [(11 * H, 12 * H)]
 
 
-@check("the grid is 24 hours and a next-day button, in your own time")
+@check("hours are picked a day at a time, from a list on your own clock")
 def _() -> None:
     from datetime import date, datetime
 
     from ctc import schedule as sched
-    from ctc.schedule_views import AvailabilityGrid
+    from ctc.schedule_views import AvailabilityPicker
 
     tz = "Europe/London"
     hours = {h.hour: h.start for h in sched.hours_of(tz, date(2026, 12, 5))}
-    now = hours[12] + 60  # just after noon on the day shown
+    now = hours[12] + 60  # just after noon on the first day
     assert datetime.fromtimestamp(now, sched.zone(tz)).date() == date(2026, 12, 5)
     row = {"id": 7, "member_id": "5"}
 
-    def grid(side, mine=(), theirs=()):
-        return AvailabilityGrid(
-            None, row, user_id=1, side=side, tz=tz, day=0,
+    def picker(side, mine=(), theirs=(), page=0):
+        return AvailabilityPicker(
+            None, row, user_id=1, side=side, tz=tz, page=page,
             mine=set(mine), theirs=list(theirs), now=now,
         )
 
-    trainer = grid("trainer", mine=[hours[19]], theirs=[(hours[19], hours[21])])
-    assert_component_limits(trainer, "grid")
-    hour_buttons = [b for b in buttons(trainer) if b.label[:2].isdigit()]
-    assert len(hour_buttons) == 24 and len(buttons(trainer)) == 25
-    by_hour = {int(b.label[:2]): b for b in hour_buttons}
-    assert by_hour[11].disabled and by_hour[12].disabled, "hours that have started are gone"
-    assert by_hour[19].style is discord.ButtonStyle.success
-    assert "\N{CHECK MARK}" in by_hour[19].label, "both free is ticked"
-    assert by_hour[20].style is discord.ButtonStyle.primary, "the trainee's hours show blue"
-    assert not by_hour[22].disabled, "an instructor can mark any hour"
-    assert buttons(trainer)[-1].label.startswith("Sun 6 Dec")
-    assert "Europe" not in trainer.content() and "UK" in trainer.content()
+    trainer = picker("trainer", mine=[hours[19]], theirs=[(hours[19], hours[21])])
+    assert_component_limits(trainer, "picker")
+    lists = selects(trainer)
+    assert len(lists) == 4 and trainer.pages == 2, "seven days, four lists to a page"
+    today = lists[0]
+    assert today.placeholder == "Sat 5 Dec · 1 h picked"
+    assert [o.label for o in today.options][:2] == ["13:00", "14:00"], "hours that began are gone"
+    assert today.min_values == 0 and today.max_values == len(today.options) == 11
+    assert [o.label for o in today.options if o.default] == ["19:00"]
+    assert [o.label for o in today.options if o.description] == ["19:00", "20:00"]
+    assert len(lists[1].options) == 24 and lists[1].placeholder == "Sun 6 Dec · pick your hours"
+    assert labels(trainer)[0].startswith("More days") and "page 1 of 2" in labels(trainer)[0]
+    assert len(selects(picker("trainer", page=1))) == 3
+    assert picker("trainer", page=2).page == 0, "paging wraps round"
+    assert "UK" in trainer.content() and "<@5>" in trainer.content()
 
-    trainee = grid("trainee", theirs=[(hours[19], hours[21])])
-    t_hours = {int(b.label[:2]): b for b in buttons(trainee) if b.label[:2].isdigit()}
-    assert t_hours[22].disabled, "a trainee cannot pick an hour no instructor is around"
-    assert not t_hours[19].disabled and t_hours[19].style is discord.ButtonStyle.primary
+    trainee = picker("trainee", theirs=[(hours[19], hours[21])])
+    (only,) = selects(trainee)
+    assert [o.label for o in only.options] == ["19:00", "20:00"], "only instructor hours"
+    assert not any(o.description for o in only.options)
+    assert not buttons(trainee), "one page needs no paging button"
+    assert not picker("trainee").days, "nothing to offer before the instructor marks hours"
 
 
 @check("schedule buttons survive a restart and do not collide with tickets")
@@ -2489,6 +2508,70 @@ def _() -> None:
     assert cleared == [7]
 
 
+@check("only the request's TI, Guest TI and trainee take part in Pick a time")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20"}
+    marked = [
+        {"user_id": "10", "side": "trainer", "slot_start": 4_000_000_000},
+        {"user_id": "30", "side": "trainer", "slot_start": 4_000_003_600},  # no longer seated
+        {"user_id": "5", "side": "trainee", "slot_start": 4_000_000_000},
+    ]
+
+    def user(uid):
+        return SimpleNamespace(id=uid, display_name="x")
+
+    async def by_id(_rid):
+        return dict(row)
+
+    async def availability(_rid):
+        return marked
+
+    cog = CTC.__new__(CTC)
+    cog.units = Units({}, DEFAULTS)  # no roles set: everyone counts as an instructor
+    cog.database = SimpleNamespace(by_id=by_id, availability=availability)
+    assert cog.side_of(user(10), row) == "trainer" and cog.side_of(user(20), row) == "trainer"
+    assert cog.side_of(user(5), row) == "trainee"
+    assert cog.side_of(user(30), row) is None, "another instructor does not take part"
+
+    summary = asyncio.run(cog.times_summary(9))
+    assert summary.trainers == ["10"], "an unseated instructor's hours stop counting"
+    assert summary.trainer_free == [(4_000_000_000, 4_000_003_600)]
+
+    def press(uid, handler, action):
+        sent, opened = [], []
+
+        async def send_message(content, **_):
+            sent.append(content)
+
+        async def open_grid(_i, _row, side, **_):
+            opened.append(side)
+
+        async def ensure_times_message(_row):
+            pass
+
+        cog.open_grid, cog.ensure_times_message = open_grid, ensure_times_message
+        interaction = SimpleNamespace(
+            user=user(uid), response=SimpleNamespace(send_message=send_message)
+        )
+        asyncio.run(getattr(cog, handler)(interaction, action, 9))
+        return sent, opened
+
+    assert press(10, "handle_ticket_action", "times") == ([], ["trainer"])
+    assert press(20, "handle_ticket_action", "times") == ([], ["trainer"])
+    sent, opened = press(30, "handle_ticket_action", "times")
+    assert not opened and "Only the TI on this request" in sent[0], "card: other instructor"
+
+    assert press(5, "handle_schedule_action", "mark") == ([], ["trainee"])
+    assert press(10, "handle_schedule_action", "mark") == ([], ["trainer"])
+    sent, opened = press(30, "handle_schedule_action", "mark")
+    assert not opened and sent[0].startswith("This is for the trainee and the TI")
+
+
 @check("only the request's TI or Guest TI can Book a time")
 def _() -> None:
     from types import SimpleNamespace
@@ -2532,8 +2615,9 @@ def _() -> None:
         opened, booked = press(seated)
         assert opened.startswith("Nothing lines up yet"), "the seated TI gets the booking list"
         assert booked.endswith("reached booking"), booked
-    for outsider, who in ((30, "another instructor"), (5, "the trainee")):
-        assert press(outsider) == [SEATED_ONLY, SEATED_ONLY], f"{who} cannot book"
+    assert press(5) == [SEATED_ONLY, SEATED_ONLY], "the trainee cannot book"
+    panel, direct = press(30)  # another instructor is not part of the panel at all
+    assert panel.startswith("This is for the trainee and the TI") and direct == SEATED_ONLY
 
 
 @check("only the request's TI or Guest TI can Set a date")
@@ -2572,7 +2656,8 @@ def _() -> None:
     for via in ("card", "shared message"):
         assert press(10, via) == ([], [9]), f"the TI can set it ({via})"
         assert press(20, via) == ([], [9]), f"the Guest TI can set it ({via})"
-        assert press(30, via) == ([SEATED_ONLY], []), f"another instructor cannot ({via})"
+        sent, opened = press(30, via)
+        assert not opened and len(sent) == 1, f"another instructor cannot ({via})"
         assert press(5, via) == ([SEATED_ONLY], []), f"the trainee cannot ({via})"
 
 

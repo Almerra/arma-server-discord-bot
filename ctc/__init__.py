@@ -615,6 +615,39 @@ class CTCDatabaseManager:
         await self.connection.commit()
         return marked
 
+    async def set_slots(
+        self,
+        request_id: int,
+        *,
+        user_id: str,
+        side: str,
+        offered: Sequence[int],
+        chosen: Sequence[int],
+    ) -> bool:
+        """Set which of the ``offered`` hours are marked: exactly the ``chosen``
+        ones. Hours outside ``offered`` are left alone, so saving one day does
+        not touch another. True if anything changed.
+        """
+        offered = [int(o) for o in offered]
+        if not offered:
+            return False
+        wanted = {int(c) for c in chosen} & set(offered)
+        marks = ",".join("?" for _ in offered)
+        scope = (request_id, str(user_id), side, *offered)
+        where = f"request_id = ? AND user_id = ? AND side = ? AND slot_start IN ({marks})"
+        rows = await self._many(f"SELECT slot_start FROM ctc_availability WHERE {where}", scope)
+        before = {r["slot_start"] for r in rows}
+        if before == wanted:
+            return False
+        await self.connection.execute(f"DELETE FROM ctc_availability WHERE {where}", scope)
+        await self.connection.executemany(
+            "INSERT INTO ctc_availability (request_id, user_id, side, slot_start) "
+            "VALUES (?, ?, ?, ?)",
+            [(request_id, str(user_id), side, start) for start in sorted(wanted)],
+        )
+        await self.connection.commit()
+        return True
+
     async def set_times_message(self, request_id: int, message_id: str | None) -> None:
         await self.connection.execute(
             "UPDATE ctc_requests SET times_message_id = ? WHERE id = ?", (message_id, request_id)
