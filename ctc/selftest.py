@@ -2508,6 +2508,70 @@ def _() -> None:
     assert cleared == [7]
 
 
+@check("only the request's TI, Guest TI and trainee take part in Pick a time")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20"}
+    marked = [
+        {"user_id": "10", "side": "trainer", "slot_start": 4_000_000_000},
+        {"user_id": "30", "side": "trainer", "slot_start": 4_000_003_600},  # no longer seated
+        {"user_id": "5", "side": "trainee", "slot_start": 4_000_000_000},
+    ]
+
+    def user(uid):
+        return SimpleNamespace(id=uid, display_name="x")
+
+    async def by_id(_rid):
+        return dict(row)
+
+    async def availability(_rid):
+        return marked
+
+    cog = CTC.__new__(CTC)
+    cog.units = Units({}, DEFAULTS)  # no roles set: everyone counts as an instructor
+    cog.database = SimpleNamespace(by_id=by_id, availability=availability)
+    assert cog.side_of(user(10), row) == "trainer" and cog.side_of(user(20), row) == "trainer"
+    assert cog.side_of(user(5), row) == "trainee"
+    assert cog.side_of(user(30), row) is None, "another instructor does not take part"
+
+    summary = asyncio.run(cog.times_summary(9))
+    assert summary.trainers == ["10"], "an unseated instructor's hours stop counting"
+    assert summary.trainer_free == [(4_000_000_000, 4_000_003_600)]
+
+    def press(uid, handler, action):
+        sent, opened = [], []
+
+        async def send_message(content, **_):
+            sent.append(content)
+
+        async def open_grid(_i, _row, side, **_):
+            opened.append(side)
+
+        async def ensure_times_message(_row):
+            pass
+
+        cog.open_grid, cog.ensure_times_message = open_grid, ensure_times_message
+        interaction = SimpleNamespace(
+            user=user(uid), response=SimpleNamespace(send_message=send_message)
+        )
+        asyncio.run(getattr(cog, handler)(interaction, action, 9))
+        return sent, opened
+
+    assert press(10, "handle_ticket_action", "times") == ([], ["trainer"])
+    assert press(20, "handle_ticket_action", "times") == ([], ["trainer"])
+    sent, opened = press(30, "handle_ticket_action", "times")
+    assert not opened and "Only the TI on this request" in sent[0], "card: other instructor"
+
+    assert press(5, "handle_schedule_action", "mark") == ([], ["trainee"])
+    assert press(10, "handle_schedule_action", "mark") == ([], ["trainer"])
+    sent, opened = press(30, "handle_schedule_action", "mark")
+    assert not opened and sent[0].startswith("This is for the trainee and the TI")
+
+
 @check("only the request's TI or Guest TI can Book a time")
 def _() -> None:
     from types import SimpleNamespace
@@ -2551,8 +2615,9 @@ def _() -> None:
         opened, booked = press(seated)
         assert opened.startswith("Nothing lines up yet"), "the seated TI gets the booking list"
         assert booked.endswith("reached booking"), booked
-    for outsider, who in ((30, "another instructor"), (5, "the trainee")):
-        assert press(outsider) == [SEATED_ONLY, SEATED_ONLY], f"{who} cannot book"
+    assert press(5) == [SEATED_ONLY, SEATED_ONLY], "the trainee cannot book"
+    panel, direct = press(30)  # another instructor is not part of the panel at all
+    assert panel.startswith("This is for the trainee and the TI") and direct == SEATED_ONLY
 
 
 @check("only the request's TI or Guest TI can Set a date")
@@ -2591,7 +2656,8 @@ def _() -> None:
     for via in ("card", "shared message"):
         assert press(10, via) == ([], [9]), f"the TI can set it ({via})"
         assert press(20, via) == ([], [9]), f"the Guest TI can set it ({via})"
-        assert press(30, via) == ([SEATED_ONLY], []), f"another instructor cannot ({via})"
+        sent, opened = press(30, via)
+        assert not opened and len(sent) == 1, f"another instructor cannot ({via})"
         assert press(5, via) == ([SEATED_ONLY], []), f"the trainee cannot ({via})"
 
 

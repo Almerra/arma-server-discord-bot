@@ -402,6 +402,10 @@ through **Assign…** adds them to the thread either way.
 thread and opens the instructor's hour lists. Everything after that happens from
 the shared message:
 
+- Only the request's own TI, its Guest TI and the trainee take part. Other
+  instructors are refused, and hours left by an instructor who has since been
+  released or reassigned stop counting. **Pick a time** on the card is for the
+  TI or Guest TI; the trainee joins from the shared message.
 - **Mark my times** opens a private set of lists, one per day for the next 7
   days, labelled on your own clock. Open a day, tick every hour, and click
   outside the list: the whole day saves at once. Four days fit on a page, with

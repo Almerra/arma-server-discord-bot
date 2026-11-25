@@ -1260,6 +1260,12 @@ class CTC(commands.Cog, name="ctc"):
             return
 
         if action == "times":
+            if not self.is_seated(interaction.user, row):
+                await interaction.response.send_message(
+                    "Only the TI on this request (or its Guest TI) can start Pick a time.",
+                    ephemeral=True,
+                )
+                return
             # Answer first: posting the shared message is a second request to
             # Discord, and the press has to be answered within three seconds.
             await self.open_grid(interaction, row, "trainer")
@@ -1579,15 +1585,29 @@ class CTC(commands.Cog, name="ctc"):
         return str(user.id) in instructors_of(row)
 
     def side_of(self, user: discord.abc.User, row: Any) -> str | None:
-        """``trainee`` for the member who asked, ``trainer`` for anyone who can work it."""
+        """``trainee`` for the member who asked, ``trainer`` for the request's
+        own TI or Guest TI. Nobody else takes part, other instructors included.
+        """
         if str(user.id) == row["member_id"]:
             return "trainee"
-        if self.can_work_row(user, row):
+        if self.is_seated(user, row):
             return "trainer"
         return None
 
+    async def marked_hours(self, row: Any) -> list[Any]:
+        """The hours that count: the trainee's, and those of whoever is seated
+        on the request now. Hours left by an instructor who has since been
+        released or reassigned are ignored.
+        """
+        seated = instructors_of(row)
+        return [
+            r for r in await self.database.availability(int(row["id"]))
+            if r["side"] == "trainee" or r["user_id"] in seated
+        ]
+
     async def times_summary(self, request_id: int) -> sched.Summary:
-        return sched.summarise(await self.database.availability(request_id), time.time())
+        row = await self.database.by_id(request_id)
+        return sched.summarise(await self.marked_hours(row) if row else [], time.time())
 
     async def times_channel(self, row: Any) -> Any:
         channel_id = int(row["thread_id"] or row["queue_channel_id"])
@@ -1701,7 +1721,8 @@ class CTC(commands.Cog, name="ctc"):
         side = self.side_of(interaction.user, row)
         if side is None:
             await interaction.response.send_message(
-                "This is for the trainee and the instructors on this request.", ephemeral=True
+                "This is for the trainee and the TI on this request (or its Guest TI).",
+                ephemeral=True,
             )
             return
 
@@ -1780,7 +1801,7 @@ class CTC(commands.Cog, name="ctc"):
     ) -> AvailabilityPicker | None:
         """Someone's hour lists, or None for a trainee with nothing to pick from."""
         now = time.time()
-        rows = await self.database.availability(int(row["id"]))
+        rows = await self.marked_hours(row)
         mine = {
             int(r["slot_start"]) for r in rows if r["user_id"] == str(user_id) and r["side"] == side
         }
@@ -1849,9 +1870,14 @@ class CTC(commands.Cog, name="ctc"):
     ) -> None:
         """Save one day's list: of the hours it offered, exactly the ticked ones."""
         row = await self.database.by_id(picker.request_id)
-        if row is None or row["status"] != "claimed":
+        # Checked again here: the seats can change while the lists sit open.
+        if (
+            row is None
+            or row["status"] != "claimed"
+            or self.side_of(interaction.user, row) != picker.side
+        ):
             await interaction.response.edit_message(
-                content="This request is no longer open for scheduling.", view=None
+                content="This request is no longer open for you to schedule.", view=None
             )
             return
 
