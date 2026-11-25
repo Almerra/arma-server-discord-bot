@@ -2,7 +2,7 @@
 
 The shared message in the request's thread is persistent: its buttons carry
 the request id in their custom_id, like the ticket buttons. Everything a
-person opens from it (their hour grid, the time zone picker, the booking
+person opens from it (their hour lists, the time zone picker, the booking
 list) is ephemeral, so it can be labelled in that one person's own time.
 """
 
@@ -151,19 +151,24 @@ def all_times_embed(row: Any, summary: sched.Summary, tz: str | None) -> discord
     return embed
 
 
-# ------------------------------------------------------------- hour grid
+# ----------------------------------------------------------- hour picker
 
 
-class AvailabilityGrid(discord.ui.View):
-    """One person's 24 hours for one day, on their own clock.
+class AvailabilityPicker(discord.ui.View):
+    """One person's hours, a list per day, on their own clock.
 
-    24 hour buttons and a next-day button fill Discord's five rows of five
-    exactly. Every tap saves straight away, so there is no Save to forget.
+    Each day is a multi-select: open it, tick every hour, close it, and the
+    whole day saves in one go. Ticking happens in the Discord app, so there
+    is no wait between hours, unlike a button per hour.
 
     ``theirs`` is the other side's free time: the trainee's for an
-    instructor, the instructors' for a trainee. A trainee can only pick hours
-    an instructor is around; an instructor can mark any hour.
+    instructor, the instructors' for a trainee. A trainee is only offered
+    hours an instructor is around, so days with none are left out; an
+    instructor is offered every hour still to come.
     """
+
+    #: A message holds five rows; four lists leave one for the paging button.
+    DAYS_PER_PAGE = 4
 
     def __init__(
         self,
@@ -173,7 +178,7 @@ class AvailabilityGrid(discord.ui.View):
         user_id: int,
         side: str,
         tz: str,
-        day: int,
+        page: int,
         mine: set[int],
         theirs: list[tuple[int, int]],
         now: float,
@@ -185,79 +190,97 @@ class AvailabilityGrid(discord.ui.View):
         self.user_id = user_id
         self.side = side
         self.tz = tz
-        self.day = day
-        self.date = sched.day_of(tz, day, now)
 
-        for index, hour in enumerate(sched.hours_of(tz, self.date)):
-            label = f"{hour.hour:02d}"
-            style = discord.ButtonStyle.secondary
-            disabled = hour.start is None or hour.start <= now
-            if hour.start is not None:
-                picked = hour.start in mine
+        #: (date, [(hour, start, other side is free)]) for each day with anything to pick.
+        self.days: list[tuple[date, list[tuple[int, int, bool]]]] = []
+        for offset in range(sched.DAYS_AHEAD):
+            day = sched.day_of(tz, offset, now)
+            hours = []
+            for hour in sched.hours_of(tz, day):
+                if hour.start is None or hour.start <= now:
+                    continue
                 around = sched.covers(theirs, hour.start, hour.start + sched.HOUR)
-                if picked:
-                    style = discord.ButtonStyle.success
-                    if around:
-                        label += " \N{CHECK MARK}"
-                elif around:
-                    style = discord.ButtonStyle.primary
-                elif side == "trainee":
-                    disabled = True
-            self.add_item(_HourButton(self, hour.start, label, style, disabled, row=index // 5))
+                if around or side == "trainer":
+                    hours.append((hour.hour, hour.start, around))
+            if hours:
+                self.days.append((day, hours))
 
-        following = sched.day_of(tz, (day + 1) % sched.DAYS_AHEAD, now)
-        arrow = "\N{BLACK RIGHT-POINTING TRIANGLE}"
-        self.add_item(_NextDayButton(self, f"{sched.day_label(following)} {arrow}"))
+        self.pages = max(1, -(-len(self.days) // self.DAYS_PER_PAGE))
+        self.page = page % self.pages
+        first = self.page * self.DAYS_PER_PAGE
+        for index, (day, hours) in enumerate(self.days[first:first + self.DAYS_PER_PAGE]):
+            self.add_item(_DaySelect(self, day, hours, mine, row=index))
+        if self.pages > 1:
+            self.add_item(_MoreDaysButton(self))
 
     def content(self) -> str:
-        member = f"<@{self.row['member_id']}>"
         if self.side == "trainer":
-            key = (
-                f"Tap the hours you are around. Green is you, blue is when {member} can do it, "
-                "\N{CHECK MARK} is both."
+            how = (
+                "Open a day, tick every hour you are around, then click outside the list to "
+                f"save it. Hours <@{self.row['member_id']}> can already do are marked."
             )
         else:
-            key = (
-                "Tap the hours you can do. Blue is when the instructor is around, green is "
-                "you. Grey hours have no instructor."
+            how = (
+                "Open a day, tick every hour you can do, then click outside the list to save "
+                "it. Only hours an instructor is around are listed."
             )
-        return (
-            f"**{sched.day_label(self.date)}** · your time ({sched.zone_label(self.tz)})"
-            f" · day {self.day + 1} of {sched.DAYS_AHEAD}\n{key}"
-        )
+        return f"**Your hours** · your time ({sched.zone_label(self.tz)})\n{how}"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
 
 
-class _HourButton(discord.ui.Button):
+class _DaySelect(discord.ui.Select):
     def __init__(
         self,
-        grid: AvailabilityGrid,
-        start: int | None,
-        label: str,
-        style: discord.ButtonStyle,
-        disabled: bool,
+        picker: AvailabilityPicker,
+        day: date,
+        hours: list[tuple[int, int, bool]],
+        mine: set[int],
         *,
         row: int,
     ) -> None:
-        super().__init__(label=label, style=style, disabled=disabled, row=row)
-        self.grid = grid
-        self.start = start
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        await self.grid.cog.toggle_hour(interaction, self.grid, self.start)
-
-
-class _NextDayButton(discord.ui.Button):
-    def __init__(self, grid: AvailabilityGrid, label: str) -> None:
-        super().__init__(label=label, style=discord.ButtonStyle.secondary, row=4)
-        self.grid = grid
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        await self.grid.cog.show_day(
-            interaction, self.grid, (self.grid.day + 1) % sched.DAYS_AHEAD
+        picked = sum(1 for _, start, _ in hours if start in mine)
+        super().__init__(
+            placeholder=(
+                f"{sched.day_label(day)} · {picked} h picked" if picked
+                else f"{sched.day_label(day)} · pick your hours"
+            ),
+            min_values=0,
+            max_values=len(hours),
+            options=[
+                discord.SelectOption(
+                    label=f"{hour:02d}:00",
+                    value=str(start),
+                    default=start in mine,
+                    description="Trainee can do this" if around and picker.side == "trainer"
+                    else None,
+                )
+                for hour, start, around in hours
+            ],
+            row=row,
         )
+        self.picker = picker
+        self.offered = [start for _, start, _ in hours]
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.picker.cog.save_day(
+            interaction, self.picker, self.offered, [int(value) for value in self.values]
+        )
+
+
+class _MoreDaysButton(discord.ui.Button):
+    def __init__(self, picker: AvailabilityPicker) -> None:
+        arrow = "\N{BLACK RIGHT-POINTING TRIANGLE}"
+        super().__init__(
+            label=f"More days {arrow} (page {picker.page + 1} of {picker.pages})",
+            style=discord.ButtonStyle.secondary,
+            row=4,
+        )
+        self.picker = picker
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.picker.cog.show_page(interaction, self.picker, self.picker.page + 1)
 
 
 # ------------------------------------------------------ time zone, booking
@@ -301,7 +324,7 @@ class _TimezoneSelect(discord.ui.Select):
 
 
 class SetDateView(discord.ui.View):
-    """Book a time the TI and trainee agreed without the grid.
+    """Book a time the TI and trainee agreed without the hour lists.
 
     Day, hour and minute from lists rather than typed, so there is no 05/11
     to read two ways, all on the setter's own clock. Each pick redraws the
