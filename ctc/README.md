@@ -16,6 +16,10 @@ Member                          Instructor
   ↓ optional notes
   └─→ one thread per badge ───→ [ Claim ]
                                   ↓
+  [ Open Schedule Tool ] ←────→ [ Open Schedule Tool ] / [ Set a Time/Date ]
+    either side marks hours        ↓
+                               [ Book a time ] ──→ booked, reminder an hour before
+                                  ↓
                                [ Badge Completed ] / [ All passed ]
                                [ Partial ] / [ Record result ]
                                   ↓
@@ -548,9 +552,28 @@ restart is enough.
 python -m ctc.selftest
 ```
 
-79 offline checks — catalogue validation, all three badge kinds, variants, the
-full request lifecycle, amendments, and that every view fits Discord's component
-limits. No Discord connection required.
+108 offline checks — catalogue validation, all three badge kinds, variants, the
+full request lifecycle, amendments, Guest TIs, scheduling (time zones, clock
+changes, who may press what, pings, rescheduling), and that every view fits
+Discord's component limits. No Discord connection required.
+
+## Where the code lives
+
+| File | What it holds |
+| --- | --- |
+| `cogs/ctc.py` | The cog: commands, permissions, posting requests, the ticket card's buttons, keep-alive bumps and chase-ups. |
+| `ctc/scheduling.py` | Scheduling, as a mixin the cog inherits: the schedule tool, booking, rescheduling, the reminder. |
+| `ctc/__init__.py` | The database layer and the request status machine. |
+| `ctc/views.py` | The ticket card and the request, result, amend and assign screens. |
+| `ctc/schedule_views.py` | The shared schedule message and the hour lists, time zone, booking and reschedule screens. |
+| `ctc/schedule.py` | Time zone and hour-range logic, with no Discord in it. |
+| `ctc/catalogue.py`, `ctc/units.py` | Badge catalogues and per-battalion settings. |
+| `ctc/config_views.py` | The `/badge config` editor. |
+| `ctc/schema.sql` | Tables. Columns added later are also listed in `LATER_COLUMNS` in the cog, which adds them to a live database on startup. |
+| `ctc/selftest.py` | The offline checks. |
+
+Helper modules go in `ctc/`, not `cogs/`: the bot loads every file in `cogs/`
+as an extension.
 
 ## Known limits
 
