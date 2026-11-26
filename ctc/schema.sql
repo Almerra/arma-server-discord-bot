@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS `ctc_requests` (
   `trainee_times_pinged_at` TEXT,
   `times_note_ids`   TEXT,
   `booked_message_id` TEXT,
-  `rescheduling_at`  TEXT
+  `rescheduling_at`  TEXT,
+  `first_side`       TEXT
 );
 
 -- When the people on a request are around: one row per hour they marked.

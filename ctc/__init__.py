@@ -692,14 +692,24 @@ class CTCDatabaseManager:
         await self.connection.commit()
         return await self.by_id(request_id)  # type: ignore[return-value]
 
+    async def set_first_side(self, request_id: int, side: str) -> None:
+        """Record which side marked hours first: ``trainer`` or ``trainee``.
+        The other side then picks from those hours. Set once per request."""
+        await self.connection.execute(
+            "UPDATE ctc_requests SET first_side = ? WHERE id = ? AND first_side IS NULL",
+            (side, request_id),
+        )
+        await self.connection.commit()
+
     async def start_reschedule(self, request_id: int) -> None:
         """Mark a booked session as being moved, until the next booking.
 
         The booking itself stays. Each side can be pinged once again about
-        the other's hours, as for a first booking.
+        the other's hours, as for a first booking, and who goes first is open
+        again: the next side to mark hours is offered every hour.
         """
         await self.connection.execute(
-            "UPDATE ctc_requests SET rescheduling_at = datetime('now'), "
+            "UPDATE ctc_requests SET rescheduling_at = datetime('now'), first_side = NULL, "
             "trainer_times_pinged_at = NULL, trainee_times_pinged_at = NULL WHERE id = ?",
             (request_id,),
         )

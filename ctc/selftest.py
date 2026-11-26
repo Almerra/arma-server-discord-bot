@@ -1085,6 +1085,11 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             r = await db.by_id(rid)
             assert r["rescheduling_at"] and r["booked_for"] == 200_000, "the booking stays"
             assert r["trainer_times_pinged_at"] is None, "each side can be pinged once more"
+            await db.set_first_side(rid, "trainer")
+            await db.set_first_side(rid, "trainee")
+            assert (await db.by_id(rid))["first_side"] == "trainer", "settled once"
+            await db.start_reschedule(rid)
+            assert (await db.by_id(rid))["first_side"] is None, "a reschedule opens it again"
             r = await db.book(rid, when=300_000, booked_by="ti1")
             assert r["rescheduling_at"] is None, "a new booking ends the reschedule"
 
@@ -2288,10 +2293,10 @@ def _() -> None:
     assert datetime.fromtimestamp(now, sched.zone(tz)).date() == date(2026, 12, 5)
     row = {"id": 7, "member_id": "5"}
 
-    def picker(side, mine=(), theirs=(), page=0):
+    def picker(side, mine=(), theirs=(), page=0, limited=False):
         return AvailabilityPicker(
             None, row, user_id=1, side=side, tz=tz, page=page,
-            mine=set(mine), theirs=list(theirs), now=now,
+            mine=set(mine), theirs=list(theirs), now=now, limited=limited,
         )
 
     trainer = picker("trainer", mine=[hours[19]], theirs=[(hours[19], hours[21])])
@@ -2310,16 +2315,89 @@ def _() -> None:
     assert picker("trainer", page=2).page == 0, "paging wraps round"
     assert "UK" in trainer.content() and "<@5>" in trainer.content()
 
-    trainee = picker("trainee", theirs=[(hours[19], hours[21])])
-    today = selects(trainee)[0]
-    assert len(today.options) == 11, "either side can go first, so every hour is offered"
-    assert [o.label for o in today.options if o.description == "Instructor is around"] == [
-        "19:00", "20:00"
-    ]
+    # Going second: only the first side's hours, plus any already ticked.
+    second = picker("trainee", mine=[hours[22]], theirs=[(hours[19], hours[21])], limited=True)
+    (only,) = selects(second)
+    assert [o.label for o in only.options] == ["19:00", "20:00", "22:00"]
+    assert [o.label for o in only.options if o.default] == ["22:00"], "can still be unticked"
+    assert not buttons(second) and "Only the hours the instructor marked" in second.content()
+    assert "Only the hours <@5> marked" in picker(
+        "trainer", theirs=[(hours[19], hours[21])], limited=True
+    ).content()
     first = picker("trainee")  # before the instructor has marked anything
     assert len(selects(first)) == 4 and not any(
         o.description for o in selects(first)[0].options
     )
+
+
+@check("whoever marks hours first sees every hour, the other side picks from those")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    import time
+
+    future = int(time.time()) // 3600 * 3600 + 7200  # inside the days the lists cover
+    row = {"id": 9, "unit": "default", "member_id": "5", "status": "claimed",
+           "instructor_id": "10", "guest_instructor_id": None, "first_side": None}
+    marked: list[dict] = []
+    saved: list[str] = []
+
+    async def by_id(_rid):
+        return dict(row)
+
+    async def availability(_rid):
+        return list(marked)
+
+    async def set_first_side(_rid, side):
+        saved.append(side)
+        row["first_side"] = row["first_side"] or side
+
+    async def set_slots(_rid, *, user_id, side, offered, chosen):
+        marked.extend({"user_id": user_id, "side": side, "slot_start": c} for c in chosen)
+        return True
+
+    async def open_grid(*_a, **_k):
+        pass
+
+    cog = CTC.__new__(CTC)
+    cog.database = SimpleNamespace(by_id=by_id, availability=availability,
+                                   set_first_side=set_first_side, set_slots=set_slots)
+    cog.open_grid = open_grid
+    cog.later = lambda *_a, **_k: None
+
+    def limited(uid, side):
+        picker = asyncio.run(cog.build_grid(row, uid, side, "Etc/UTC", 0))
+        return picker.limited
+
+    def save(uid, side, hours):
+        interaction = SimpleNamespace(user=SimpleNamespace(id=uid), response=None)
+        picker = SimpleNamespace(request_id=9, side=side, page=0, stop=lambda: None)
+        asyncio.run(cog.save_day(interaction, picker, hours, hours))
+
+    assert not limited(5, "trainee") and not limited(10, "trainer"), "nobody has gone yet"
+    save(5, "trainee", [future, future + 3600])          # the trainee goes first
+    assert saved == ["trainee"]
+    assert limited(10, "trainer"), "the TI now picks from the trainee's hours"
+    assert not limited(5, "trainee"), "the first side still sees every hour"
+    save(10, "trainer", [future])
+    assert saved == ["trainee"], "settled once"
+    assert limited(10, "trainer") and not limited(5, "trainee"), "still so with both marked"
+
+    # A reschedule: both keep their old hours, and whoever acts first is unlimited.
+    row.update(first_side=None, rescheduling_at="now")
+    assert not limited(10, "trainer") and not limited(5, "trainee"), "open to either again"
+    save(10, "trainer", [future + 7200])
+    assert saved[-1] == "trainer", "the TI acted first this time, despite the trainee's old hours"
+    assert limited(5, "trainee") and not limited(10, "trainer")
+
+    # A request from before the rule: nothing recorded, the other side has hours.
+    row.update(first_side=None, rescheduling_at=None)
+    marked[:] = [{"user_id": "10", "side": "trainer", "slot_start": future}]
+    assert limited(5, "trainee") and not limited(10, "trainer")
+    save(5, "trainee", [future])
+    assert saved[-1] == "trainer", "recorded as the side that already had hours"
 
 
 @check("schedule buttons survive a restart and do not collide with tickets")
@@ -2596,6 +2674,49 @@ def _() -> None:
     assert press(10, "handle_schedule_action", "mark") == ([], ["trainer"])
     sent, opened = press(30, "handle_schedule_action", "mark")
     assert not opened and sent[0].startswith("This is for the trainee and the TI")
+
+
+@check("either side can say none of the hours work, and the other is asked for more")
+def _() -> None:
+    from types import SimpleNamespace
+
+    from cogs.ctc import CTC
+
+    row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
+           "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20"}
+    posted: list[str] = []
+
+    async def by_id(_rid):
+        return dict(row)
+
+    async def availability(_rid):
+        return []
+
+    async def post_times_note(_row, content):
+        posted.append(content)
+
+    cog = CTC.__new__(CTC)
+    cog.units = Units({}, DEFAULTS)
+    cog.database = SimpleNamespace(by_id=by_id, availability=availability)
+    cog.post_times_note = post_times_note
+
+    def press(uid):
+        said: list[str] = []
+
+        async def send_message(content, **_):
+            said.append(content)
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=uid), response=SimpleNamespace(send_message=send_message)
+        )
+        asyncio.run(cog.handle_schedule_action(interaction, "none", 9))
+        return said[0]
+
+    assert press(5).startswith("Told the instructor")
+    assert posted[-1].startswith("<@10> <@20> <@5> cannot make"), posted[-1]
+    assert press(10).startswith("Told the trainee")
+    assert posted[-1].startswith("<@5> <@10> cannot make"), posted[-1]
+    assert press(30).startswith("This is for the trainee and the TI") and len(posted) == 2
 
 
 @check("someone who is both trainee and TI is asked which side they are marking")

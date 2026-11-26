@@ -113,6 +113,7 @@ LATER_COLUMNS: dict[str, dict[str, str]] = {
         "times_note_ids": "TEXT",
         "booked_message_id": "TEXT",
         "rescheduling_at": "TEXT",
+        "first_side": "TEXT",
     },
     "ctc_panels": {"unit": "TEXT"},
 }
@@ -197,6 +198,14 @@ def rescheduling(row: Any) -> bool:
         return bool(row["rescheduling_at"])
     except (KeyError, IndexError):
         return False
+
+
+def first_side(row: Any) -> str | None:
+    """Which side marked hours first, if recorded. Read defensively."""
+    try:
+        return row["first_side"] or None
+    except (KeyError, IndexError):
+        return None
 
 
 def bump_due(last: str | None, thread: Any, days: int) -> bool:
@@ -1832,19 +1841,20 @@ class CTC(commands.Cog, name="ctc"):
             await self.open_set_date(interaction, row)
 
         elif action == "none":
-            if side != "trainee":
-                await interaction.response.send_message(
-                    "This one is for the trainee.", ephemeral=True
-                )
-                return
-            trainers = (await self.times_summary(request_id)).trainers or instructors_of(row)
+            # Either side can say so: whoever went second only sees the other's
+            # hours, so this is how they ask for more.
+            if side == "trainee":
+                trainers = (await self.times_summary(request_id)).trainers or instructors_of(row)
+                others, told = " ".join(f"<@{t}>" for t in trainers), "the instructor"
+            else:
+                others, told = f"<@{row['member_id']}>", "the trainee"
             await interaction.response.send_message(
-                "Told the instructor. They will mark some more hours.", ephemeral=True
+                f"Told {told}. They will be asked to mark some more hours.", ephemeral=True
             )
             await self.post_times_note(
                 row,
-                f"{' '.join(f'<@{t}>' for t in trainers)} <@{row['member_id']}> cannot make "
-                "any of the hours marked so far. Add some more with **Mark my times**.",
+                f"{others} <@{interaction.user.id}> cannot make any of the hours marked so "
+                "far. Add some more with **Mark my times**.",
             )
 
         elif action == "book":
@@ -1879,9 +1889,18 @@ class CTC(commands.Cog, name="ctc"):
         theirs = sched.upcoming(
             sched.ranges(int(r["slot_start"]) for r in rows if r["side"] == other), now
         )
+        # Whoever marked hours first sees every hour; the other side picks
+        # from those. Where nothing was recorded (a request from before this
+        # rule), having no hours yet while the other side has some means
+        # going second. A reschedule opens it again: both sides still have
+        # their old hours, and whoever saves first becomes the first side.
+        first = first_side(row)
+        limited = bool(theirs) and (
+            first == other if first else not mine and not rescheduling(row)
+        )
         picker = AvailabilityPicker(
             self, row, user_id=user_id, side=side, tz=tz, page=page,
-            mine=mine, theirs=theirs, now=now,
+            mine=mine, theirs=theirs, now=now, limited=limited,
         )
         return picker if picker.days else None
 
@@ -1906,7 +1925,7 @@ class CTC(commands.Cog, name="ctc"):
             content = (
                 view.content()
                 if view is not None
-                else "The instructor has not marked any hours yet. You will be pinged when they do."
+                else "None of the hours marked so far are still to come. Ask for some more."
             )
         if edit:
             await interaction.response.edit_message(content=content, view=view)
@@ -2000,6 +2019,16 @@ class CTC(commands.Cog, name="ctc"):
                 content="This request is no longer open for you to schedule.", view=None
             )
             return
+
+        # The first save on a request settles who went first.
+        if first_side(row) is None and chosen:
+            other = "trainee" if picker.side == "trainer" else "trainer"
+            other_marked = any(r["side"] == other for r in await self.marked_hours(row))
+            # During a reschedule the other side's old hours do not make them first.
+            went_second = other_marked and not rescheduling(row)
+            await self.database.set_first_side(
+                picker.request_id, other if went_second else picker.side
+            )
 
         # An hour can pass while the list sits open; it is left as it was.
         now = time.time()

@@ -165,9 +165,10 @@ class AvailabilityPicker(discord.ui.View):
     is no wait between hours, unlike a button per hour.
 
     ``theirs`` is the other side's free time: the trainee's for an
-    instructor, the instructors' for a trainee. Either side can go first, so
-    both are offered every hour still to come, with the other side's hours
-    marked once there are some.
+    instructor, the instructors' for a trainee. Either side can go first.
+    Whoever does is offered every hour still to come; the other side is then
+    ``limited`` to the hours the first one marked, so anything they tick is a
+    time both can do.
     """
 
     #: A message holds five rows; four lists leave one for the paging button.
@@ -185,8 +186,10 @@ class AvailabilityPicker(discord.ui.View):
         mine: set[int],
         theirs: list[tuple[int, int]],
         now: float,
+        limited: bool = False,
     ) -> None:
         super().__init__(timeout=840)  # inside the 15 minutes an ephemeral can be edited
+        self.limited = limited
         self.cog = cog
         self.row = row
         self.request_id = int(row["id"])
@@ -203,7 +206,9 @@ class AvailabilityPicker(discord.ui.View):
                 if hour.start is None or hour.start <= now:
                     continue
                 around = sched.covers(theirs, hour.start, hour.start + sched.HOUR)
-                hours.append((hour.hour, hour.start, around))
+                # An hour already ticked stays listed, so it can be unticked.
+                if around or not limited or hour.start in mine:
+                    hours.append((hour.hour, hour.start, around))
             if hours:
                 self.days.append((day, hours))
 
@@ -216,16 +221,16 @@ class AvailabilityPicker(discord.ui.View):
             self.add_item(_MoreDaysButton(self))
 
     def content(self) -> str:
-        if self.side == "trainer":
-            how = (
-                "Open a day, tick every hour you are around, then click outside the list to "
-                f"save it. Hours <@{self.row['member_id']}> can already do are marked."
-            )
+        other = f"<@{self.row['member_id']}>" if self.side == "trainer" else "the instructor"
+        how = (
+            "Open a day, tick every hour you can do, then click outside the list to save it. "
+        )
+        if self.limited:
+            how += f"Only the hours {other} marked are listed."
+        elif self.side == "trainer":
+            how += f"Hours {other} can already do are marked."
         else:
-            how = (
-                "Open a day, tick every hour you can do, then click outside the list to save "
-                "it. Hours an instructor is around are marked."
-            )
+            how += "Hours an instructor is around are marked."
         return f"**Your hours** · your time ({sched.zone_label(self.tz)})\n{how}"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:

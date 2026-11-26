@@ -406,13 +406,15 @@ happens from the shared message:
   instructors are refused, and hours left by an instructor who has since been
   released or reassigned stop counting.
 - Either side can go first: the trainee or the TI can open the tool and mark
-  hours before the other has.
+  hours before the other has. Whoever goes first is offered every hour still
+  to come. The other side is then limited to the hours the first one marked,
+  so anything they tick is a time both can do. The first side can add more
+  hours at any time.
 - **Mark my times** opens a private set of lists, one per day for the next 7
   days, labelled on your own clock. Open a day, tick every hour, and click
   outside the list: the whole day saves at once. Four days fit on a page, with
   a button for the rest.
-- Both sides are offered every hour still to come, with the other side's hours
-  marked once there are some. A TI's and a Guest TI's hours are pooled.
+- A TI's and a Guest TI's hours are pooled.
 - The shared message stays short: how many hours each side has marked, and the
   next five times both are free (or the booked time, once there is one). Those
   times are Discord timestamps, so each reader sees their own local time.
@@ -426,7 +428,8 @@ happens from the shared message:
 - A ping that would ask for something already done is skipped: no ping to the
   trainee if they have already picked hours, none to the instructor if the
   session is already booked.
-- **None of these work** (trainee) pings the instructor to add more hours.
+- **None of these work** pings the other side to add more hours. The trainee
+  or the TI (or Guest TI) can press it.
 - **Book a time** offers start times where both are free, in the booker's own
   time. Only the request's own TI or Guest TI can book. The booked time goes on
   the card and the shared message, and everyone on the request is pinged about
@@ -448,7 +451,9 @@ happens from the shared message:
   **Schedule a new Time/Date** (TI or Guest TI), and either asks for a reason
   first. The reason is posted in the thread with who asked, and pings everyone
   on the request. The schedule tool opens with the hours marked before, minus
-  any that have passed.
+  any that have passed. Who goes first is open again: whichever side marks
+  hours first after the reschedule is offered every hour, and the other side
+  then picks from theirs.
 - The current booking stays until a new time is booked, so the thread keeps
   quiet and the reminder holds if a reschedule is never finished. While one is
   under way, each side can be pinged once more about the other's hours.
