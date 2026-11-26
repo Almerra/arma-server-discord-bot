@@ -61,10 +61,6 @@ def relative(stamp: str | None) -> str:
     return f"<t:{int(parsed.timestamp())}:R>"
 
 
-def describe_kind(badge: Badge) -> str:
-    return {"timed": "Timed test", "graded": "Graded", "tab": "Tab"}[badge.kind]
-
-
 # ----------------------------------------------------------------- embeds
 
 

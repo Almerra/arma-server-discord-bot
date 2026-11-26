@@ -1035,11 +1035,8 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
 
         async def availability_and_bookings():
             rid = await new_request("t1")
-            assert await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=7200)
-            assert await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=10800)
-            assert not await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=7200), (
-                "a second tap unmarks the hour"
-            )
+            await db.set_slots(rid, user_id="ti1", side="trainer", offered=[7200, 10800],
+                               chosen=[10800])
             rows = await db.availability(rid)
             assert [(r["user_id"], r["slot_start"]) for r in rows] == [("ti1", 10800)]
 
@@ -1055,7 +1052,8 @@ async def lifecycle() -> list[tuple[str, Exception | None]]:
             assert marked == [3600, 7200, 90000], "other days untouched, unoffered ignored"
             await db.set_slots(rid, user_id="ti1", side="trainer", offered=day + [90000], chosen=[])
             assert not await db.availability(rid), "unticking everything clears the day"
-            await db.toggle_slot(rid, user_id="ti1", side="trainer", slot_start=10800)
+            await db.set_slots(rid, user_id="ti1", side="trainer", offered=[10800],
+                               chosen=[10800])
 
             assert await db.timezone_of("u1") is None
             await db.set_timezone("u1", "Europe/London")
@@ -2332,11 +2330,10 @@ def _() -> None:
 
 @check("whoever marks hours first sees every hour, the other side picks from those")
 def _() -> None:
+    import time
     from types import SimpleNamespace
 
     from cogs.ctc import CTC
-
-    import time
 
     future = int(time.time()) // 3600 * 3600 + 7200  # inside the days the lists cover
     row = {"id": 9, "unit": "default", "member_id": "5", "status": "claimed",
@@ -2358,17 +2355,17 @@ def _() -> None:
         marked.extend({"user_id": user_id, "side": side, "slot_start": c} for c in chosen)
         return True
 
-    async def open_grid(*_a, **_k):
+    async def open_picker(*_a, **_k):
         pass
 
     cog = CTC.__new__(CTC)
     cog.database = SimpleNamespace(by_id=by_id, availability=availability,
                                    set_first_side=set_first_side, set_slots=set_slots)
-    cog.open_grid = open_grid
+    cog.open_picker = open_picker
     cog.later = lambda *_a, **_k: None
 
     def limited(uid, side):
-        picker = asyncio.run(cog.build_grid(row, uid, side, "Etc/UTC", 0))
+        picker = asyncio.run(cog.build_picker(row, uid, side, "Etc/UTC", 0))
         return picker.limited
 
     def save(uid, side, hours):
@@ -2563,7 +2560,7 @@ def _() -> None:
     asyncio.run(cog.announce_times(9, "trainee", 5))
     assert len(posted) == 1 and posted[0].endswith("to add yours."), posted
 
-    from cogs.ctc import PING_AFTER
+    from ctc.scheduling import PING_AFTER
 
     assert PING_AFTER == 300, "the other side gets five minutes to act first"
 
@@ -2651,13 +2648,13 @@ def _() -> None:
         async def send_message(content, **_):
             sent.append(content)
 
-        async def open_grid(_i, _row, side, **_):
+        async def open_picker(_i, _row, side, **_):
             opened.append(side)
 
         async def ensure_times_message(_row):
             pass
 
-        cog.open_grid, cog.ensure_times_message = open_grid, ensure_times_message
+        cog.open_picker, cog.ensure_times_message = open_picker, ensure_times_message
         interaction = SimpleNamespace(
             user=user(uid), response=SimpleNamespace(send_message=send_message)
         )
@@ -2740,12 +2737,12 @@ def _() -> None:
     async def edit_message(content=None, view=None, **_):
         asked.append(content)
 
-    async def open_grid(_i, _row, side, **_):
+    async def open_picker(_i, _row, side, **_):
         opened.append(side)
 
     cog = CTC.__new__(CTC)
     cog.database = SimpleNamespace(by_id=by_id)
-    cog.open_grid = open_grid
+    cog.open_picker = open_picker
 
     def interaction(uid):
         return SimpleNamespace(
@@ -2773,8 +2770,9 @@ def _() -> None:
 def _() -> None:
     from types import SimpleNamespace
 
-    from cogs.ctc import CTC, SEATED_ONLY
+    from cogs.ctc import CTC
     from ctc.schedule_views import ReasonModal, RescheduleView
+    from ctc.scheduling import SEATED_ONLY
 
     when = 4_000_000_000
     row = {"id": 9, "unit": "default", "badge_key": "cqc", "levels": None, "member_id": "5",
@@ -2815,7 +2813,7 @@ def _() -> None:
     async def start_reschedule(rid):
         started.append(rid)
 
-    async def open_grid(_i, _row, side, **_):
+    async def open_picker(_i, _row, side, **_):
         opened.append(f"tool:{side}")
 
     async def open_set_date(_i, _row, **_):
@@ -2832,7 +2830,7 @@ def _() -> None:
     cog.database = SimpleNamespace(by_id=by_id, start_reschedule=start_reschedule)
     cog.bot = SimpleNamespace(get_channel=lambda _cid: Channel(),
                               logger=SimpleNamespace(warning=lambda _m: None))
-    cog.open_grid, cog.open_set_date = open_grid, open_set_date
+    cog.open_picker, cog.open_set_date = open_picker, open_set_date
     cog.ensure_times_message, cog.refresh_ticket = ensure_times_message, refresh_ticket
 
     def act(uid, method, *args):
@@ -2881,7 +2879,8 @@ def _() -> None:
 def _() -> None:
     from types import SimpleNamespace
 
-    from cogs.ctc import CTC, SEATED_ONLY
+    from cogs.ctc import CTC
+    from ctc.scheduling import SEATED_ONLY
 
     row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
            "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20",
@@ -2929,7 +2928,8 @@ def _() -> None:
 def _() -> None:
     from types import SimpleNamespace
 
-    from cogs.ctc import CTC, SEATED_ONLY
+    from cogs.ctc import CTC
+    from ctc.scheduling import SEATED_ONLY
 
     row = {"id": 9, "unit": "default", "badge_key": "cqc", "member_id": "5",
            "status": "claimed", "instructor_id": "10", "guest_instructor_id": "20"}
